@@ -1,0 +1,5 @@
+__pycache__/
+server/.venv/
+server/library/
+server/logs/
+server/cookies.txt

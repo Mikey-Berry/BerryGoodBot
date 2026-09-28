@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>BerryTunes</title>
+  <meta name="theme-color" content="#16121a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BerryTunes">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1>BerryTunes</h1>
+    <button id="status" class="status" type="button" aria-label="Server status">
+      <span class="dot"></span><span id="status-text">Checking…</span>
+    </button>
+    <button id="open-settings" class="icon-btn" type="button" aria-label="Settings">
+      <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm7.4-2.5a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.7 7.7 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.7 7.7 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.6h4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5Z"/></svg>
+    </button>
+  </header>
+
+  <main>
+    <form id="add-form" class="add">
+      <input id="add-url" type="url" inputmode="url" autocomplete="off" placeholder="Paste a video link" required>
+      <button type="submit">Add</button>
+    </form>
+
+    <ul id="jobs" class="jobs" aria-live="polite"></ul>
+
+    <input id="search" class="search" type="search" placeholder="Search your library">
+
+    <ul id="tracks" class="tracks"></ul>
+    <p id="empty" class="empty" hidden>No songs yet. Paste a link above to add one.</p>
+  </main>
+
+  <!-- Mini player -->
+  <div id="mini" class="mini" hidden>
+    <button id="mini-open" class="mini-info" type="button">
+      <span class="cover small"><img id="mini-cover" alt=""></span>
+      <span class="mini-text"><strong id="mini-title"></strong><small id="mini-artist"></small></span>
+    </button>
+    <button id="mini-play" class="icon-btn" type="button" aria-label="Play/pause"></button>
+    <button id="mini-next" class="icon-btn" type="button" aria-label="Next"></button>
+    <div class="mini-progress"><span id="mini-bar"></span></div>
+  </div>
+
+  <!-- Full player -->
+  <section id="player" class="player" hidden aria-label="Now playing">
+    <button id="player-close" class="icon-btn close" type="button" aria-label="Close">
+      <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+    <span class="cover player-cover"><img id="player-cover" alt=""></span>
+    <h2 id="player-title"></h2>
+    <p id="player-artist"></p>
+    <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
+    <div class="times"><span id="t-cur">0:00</span><span id="t-dur">0:00</span></div>
+    <div class="controls">
+      <button id="shuffle" class="icon-btn toggle" type="button" aria-label="Shuffle"></button>
+      <button id="prev" class="icon-btn" type="button" aria-label="Previous"></button>
+      <button id="play" class="icon-btn big" type="button" aria-label="Play/pause"></button>
+      <button id="next" class="icon-btn" type="button" aria-label="Next"></button>
+      <button id="repeat" class="icon-btn toggle" type="button" aria-label="Repeat"></button>
+    </div>
+  </section>
+
+  <!-- Bottom sheets -->
+  <div id="sheet-backdrop" class="backdrop" hidden></div>
+  <section id="track-sheet" class="sheet" hidden>
+    <h3 id="sheet-title"></h3>
+    <p id="sheet-sub"></p>
+    <button id="sheet-save" type="button">Save to this device</button>
+    <button id="sheet-source" type="button">Open original link</button>
+    <button id="sheet-delete" class="danger" type="button">Delete song</button>
+    <button class="sheet-cancel" type="button">Cancel</button>
+  </section>
+
+  <section id="settings-sheet" class="sheet" hidden>
+    <h3>Settings</h3>
+    <label class="row">
+      <span>Save new songs to this device automatically<small>Lets you play them with the PC off.</small></span>
+      <input id="autosave" type="checkbox">
+    </label>
+    <div class="row"><span>Storage used on this device</span><span id="storage"></span></div>
+    <div class="row"><span>Downloader (yt-dlp)</span><span id="ytdlp">–</span></div>
+    <button id="save-all" type="button">Save all songs to this device now</button>
+    <button class="sheet-cancel" type="button">Done</button>
+  </section>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <audio id="audio" preload="auto" playsinline></audio>
+
+  <script src="app.js"></script>
+</body>
+</html>
