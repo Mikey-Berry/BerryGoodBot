@@ -191,3 +191,10 @@ main { padding: 4px 16px 0; }
   padding: 10px 16px; border-radius: 12px; background: var(--text); color: var(--bg);
   font-size: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.4);
 }
+
+.log {
+  margin: 0; max-height: 45vh; overflow: auto; padding: 10px; border-radius: 10px;
+  background: var(--bg); color: var(--muted); font: 12px/1.5 ui-monospace, Menlo, monospace;
+  white-space: pre-wrap; -webkit-user-select: text; user-select: text;
+}
+.row.warn > span:last-child { color: var(--bad); font-weight: 600; }

@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from downloader import Downloader, default_ffmpeg
+from downloader import Downloader, default_ffmpeg, js_runtime
 from library import Library
 
 HERE = Path(__file__).resolve().parent
@@ -41,7 +41,7 @@ def public(track: dict) -> dict:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "yt_dlp": yt_dlp.version.__version__, "cookies": COOKIES.exists()}
+    return {"ok": True, "yt_dlp": yt_dlp.version.__version__, "cookies": COOKIES.exists(), "js_runtime": js_runtime()}
 
 
 @app.get("/api/tracks")

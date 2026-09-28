@@ -65,11 +65,12 @@ Now in YouTube (or any app), tap **Share → Add to BerryTunes**. Open BerryTune
 
 ## If YouTube downloads start failing
 
-1. **Restart the server** (log out and back in, or reboot). Every start updates yt-dlp, which fixes most breakages.
-2. **Still failing with "Sign in to confirm you're not a bot"?** Give it cookies from a logged-in YouTube account:
+1. **"HTTP Error 403: Forbidden" on some songs** means YouTube refused that download, usually briefly. Failed songs are retried automatically (up to 3 tries), and any that still fail get a **Retry** button. If most downloads get 403, open **Settings** in the app and check **YouTube helper (Deno)**. If it says **Missing**, re-run `setup.cmd` and then `restart.cmd`.
+2. **Restart the server** (`restart.cmd`). Every start updates yt-dlp, which fixes most breakages.
+3. **Still failing with "Sign in to confirm you're not a bot"**, or constant 403s? Give it cookies from a logged-in YouTube account:
    - Use a **secondary Google account, not your main one.** Google occasionally flags accounts used this way.
    - Log in to YouTube with it in your browser, export its cookies with the "Get cookies.txt LOCALLY" extension, and save the file as `server\cookies.txt`. Then restart the server.
-3. Errors from each download show in the app, and the full server log is at `server\logs\server.log`.
+4. Errors from each download show in the app. The full server log, including yt-dlp's warnings, is at `server\logs\server.log`.
 
 ## Where things live
 
