@@ -118,6 +118,8 @@ const state = {
   qi: -1,
   current: null,
   filter: '',
+  playlists: prefs.get('playlists', []), // cached so they still show with the PC off
+  view: prefs.get('view', 'all'),        // 'all' or a playlist id
   shuffle: prefs.get('shuffle', false),
   repeat: prefs.get('repeat', 'off'), // off | all | one
   autosave: prefs.get('autosave', true),
@@ -137,9 +139,12 @@ function allTracks() {
   return [...merged.values()].sort((a, b) => b.added_at - a.added_at);
 }
 
+const currentPlaylist = () => state.playlists.find((pl) => pl.id === state.view) || null;
+
 function visibleTracks() {
   const q = state.filter.trim().toLowerCase();
-  const list = allTracks();
+  const pl = currentPlaylist();
+  const list = pl ? pl.track_ids.map(trackById).filter(Boolean) : allTracks();
   return q ? list.filter((t) => `${t.title} ${t.artist}`.toLowerCase().includes(q)) : list;
 }
 
@@ -202,6 +207,18 @@ async function refreshTracks() {
   renderTracks();
 }
 
+async function refreshPlaylists() {
+  setPlaylists(await (await api('/playlists')).json());
+}
+
+function setPlaylists(list) {
+  state.playlists = list;
+  prefs.set('playlists', list);
+  if (state.view !== 'all' && !currentPlaylist()) setView('all');
+  renderViews();
+  renderTracks();
+}
+
 /* ---------- adding songs ---------- */
 
 async function addUrl(raw) {
@@ -242,6 +259,7 @@ async function pollJobs() {
   }
   if (state.jobs.some((j) => j.status === 'done' && j.track_id && !state.server.has(j.track_id))) {
     await refreshTracks().catch(() => {});
+    await refreshPlaylists().catch(() => {});
     if (state.autosave) saveMissing();
   }
   renderJobs();
@@ -283,7 +301,17 @@ function renderJobs() {
       <small>Next: ${esc(queued[0].title || queued[0].url)}</small></div>
       <button type="button" class="text-btn" data-cancel-queued>Cancel</button></li>`);
   }
+  const failed = jobs.filter((j) => j.status === 'error');
+  if (failed.length > 1) {
+    const more = failed.length > 3 ? ` (showing 3)` : '';
+    items.push(`<li class="job error"><div class="label"><strong>${failed.length} downloads failed${more}</strong>
+      <small>Often temporary. Retrying later usually works.</small></div>
+      <button type="button" class="text-btn" data-retry-all>Retry all</button>
+      <button type="button" data-dismiss-all aria-label="Dismiss all">${ICONS.close}</button></li>`);
+  }
+  let shownFailed = 0;
   for (const j of jobs) {
+    if (j.status === 'error' && ++shownFailed > 3) continue;
     if (j.status === 'error') {
       const retry = j.kind === 'video' ? `<button type="button" class="text-btn" data-retry="${j.id}">Retry</button>` : '';
       items.push(row(j, j.error, retry + dismiss(j)));
@@ -299,6 +327,16 @@ function renderJobs() {
   $('jobs').innerHTML = items.join('');
   clearTimeout(renderJobs.timer);
   if (state.jobs.some((j) => j.status === 'done' && showDone(j))) renderJobs.timer = setTimeout(renderJobs, 2000);
+}
+
+async function retryJobs(ids) {
+  try {
+    await api('/jobs/retry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+  } catch {
+    toast('Couldn’t reach your PC.');
+    return;
+  }
+  pollJobs();
 }
 
 async function cancelQueued() {
@@ -397,11 +435,129 @@ async function deleteTrack(id) {
   renderTracks();
 }
 
+/* ---------- playlists ---------- */
+
+function setView(view) {
+  state.view = view;
+  prefs.set('view', view);
+}
+
+function renderViews() {
+  const count = (pl) => pl.track_ids.filter((id) => trackById(id)).length;
+  const chip = (view, label, extra = '') =>
+    `<button type="button" class="chip${state.view === view ? ' on' : ''}" data-view="${view}">${label}${extra}</button>`;
+  $('views').innerHTML = chip('all', 'All songs')
+    + state.playlists.map((pl) => chip(pl.id, esc(pl.name), state.view === pl.id
+      ? ` <span class="chip-more" aria-label="Playlist options">${ICONS.more}</span>` : ` <small>${count(pl)}</small>`)).join('')
+    + `<button type="button" class="chip new" data-new-playlist>+ New</button>`;
+}
+
+async function playlistCall(path, method, body) {
+  if (!state.online) { toast('Connect to your PC to change playlists.'); return null; }
+  try {
+    const res = await api(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return await res.json();
+  } catch (e) {
+    toast(e instanceof ApiError ? e.message : 'Couldn’t reach your PC.');
+    return null;
+  }
+}
+
+async function newPlaylist() {
+  const name = prompt('Playlist name', '')?.trim();
+  if (!name) return null;
+  const pl = await playlistCall('/playlists', 'POST', { name });
+  if (pl) await refreshPlaylists().catch(() => {});
+  return pl;
+}
+
+$('views').addEventListener('click', async (e) => {
+  if (e.target.closest('[data-new-playlist]')) {
+    const pl = await newPlaylist();
+    if (pl) { setView(pl.id); renderViews(); renderTracks(); }
+    return;
+  }
+  const btn = e.target.closest('[data-view]');
+  if (!btn) return;
+  if (btn.dataset.view === state.view && state.view !== 'all') { openPlaylistSheet(); return; }
+  setView(btn.dataset.view);
+  renderViews();
+  renderTracks();
+  btn.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' });
+});
+
+function openPlaylistSheet() {
+  const pl = currentPlaylist();
+  if (!pl) return;
+  $('pl-sheet-title').textContent = pl.name;
+  $('pl-sheet-sub').textContent = `${pl.track_ids.length} song${pl.track_ids.length === 1 ? '' : 's'}`;
+  openSheet($('playlist-sheet'));
+}
+
+$('pl-rename').addEventListener('click', async () => {
+  const pl = currentPlaylist();
+  closeSheets();
+  const name = prompt('Rename playlist', pl.name)?.trim();
+  if (!name || name === pl.name) return;
+  if (await playlistCall(`/playlists/${pl.id}`, 'PATCH', { name })) await refreshPlaylists().catch(() => {});
+});
+
+$('pl-delete').addEventListener('click', async () => {
+  const pl = currentPlaylist();
+  closeSheets();
+  if (!confirm(`Delete the playlist “${pl.name}”? The songs stay in your library.`)) return;
+  if (await playlistCall(`/playlists/${pl.id}`, 'DELETE')) await refreshPlaylists().catch(() => {});
+});
+
+// "Add to playlist" picker: tap a playlist to add or remove the song.
+function openPickSheet(trackId) {
+  sheetTrack = trackId;
+  $('pick-title').textContent = `Add “${trackById(trackId)?.title}” to…`;
+  renderPickList();
+  openSheet($('pick-sheet'));
+}
+
+function renderPickList() {
+  $('pick-list').innerHTML = state.playlists.map((pl) => {
+    const on = pl.track_ids.includes(sheetTrack);
+    return `<button type="button" class="pick${on ? ' on' : ''}" data-pick="${pl.id}">
+      <span>${esc(pl.name)}</span><span class="check">${on ? ICONS.local : ''}</span></button>`;
+  }).join('') || '<p class="empty-note">No playlists yet.</p>';
+}
+
+$('pick-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-pick]');
+  if (!btn) return;
+  const pl = state.playlists.find((p) => p.id === btn.dataset.pick);
+  const on = pl.track_ids.includes(sheetTrack);
+  const updated = on
+    ? await playlistCall(`/playlists/${pl.id}/tracks/${sheetTrack}`, 'DELETE')
+    : await playlistCall(`/playlists/${pl.id}/tracks`, 'POST', { track_id: sheetTrack });
+  if (!updated) return;
+  setPlaylists(state.playlists.map((p) => (p.id === updated.id ? updated : p)));
+  renderPickList();
+});
+
+$('pick-new').addEventListener('click', async () => {
+  const pl = await newPlaylist();
+  if (!pl) return;
+  const updated = await playlistCall(`/playlists/${pl.id}/tracks`, 'POST', { track_id: sheetTrack });
+  if (updated) setPlaylists(state.playlists.map((p) => (p.id === updated.id ? updated : p)));
+  renderPickList();
+});
+
 /* ---------- track list ---------- */
 
 function renderTracks() {
   const list = visibleTracks();
-  $('empty').hidden = allTracks().length > 0;
+  const pl = currentPlaylist();
+  $('empty').hidden = pl ? list.length > 0 : allTracks().length > 0;
+  $('empty').textContent = pl ? 'This playlist is empty. Use a song’s ⋯ menu to add it here.'
+    : 'No songs yet. Paste a link above to add one.';
   $('list-actions').hidden = list.length === 0;
   $('tracks').innerHTML = list.map((t) => {
     const cover = coverUrl(t);
@@ -432,12 +588,10 @@ $('tracks').addEventListener('click', (e) => {
 $('jobs').addEventListener('click', (e) => {
   if (e.target.closest('[data-cancel-queued]')) { cancelQueued(); return; }
   const retry = e.target.closest('[data-retry]');
-  if (retry) {
-    const job = state.jobs.find((j) => j.id === retry.dataset.retry);
-    dismissJob(retry.dataset.retry);
-    if (job) addUrl(job.url);
-    return;
-  }
+  if (retry) { retryJobs([retry.dataset.retry]); return; }
+  const failedIds = () => state.jobs.filter((j) => j.status === 'error' && !state.dismissed.has(j.id)).map((j) => j.id);
+  if (e.target.closest('[data-retry-all]')) { retryJobs(failedIds()); return; }
+  if (e.target.closest('[data-dismiss-all]')) { failedIds().forEach(dismissJob); return; }
   const btn = e.target.closest('[data-dismiss]');
   if (btn) dismissJob(btn.dataset.dismiss);
 });
@@ -699,7 +853,7 @@ async function updateMediaSession(t) {
     }
   }
   if (state.current !== t.id) return;
-  navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist || '', album: 'BerryTunes', artwork });
+  navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist || '', album: 'BerryGoodTunes', artwork });
 }
 
 function updatePositionState() {
@@ -819,6 +973,8 @@ function closeSheets() {
   $('track-sheet').hidden = true;
   $('settings-sheet').hidden = true;
   $('log-sheet').hidden = true;
+  $('playlist-sheet').hidden = true;
+  $('pick-sheet').hidden = true;
 }
 
 function openTrackSheet(id) {
@@ -830,6 +986,10 @@ function openTrackSheet(id) {
   $('sheet-sub').textContent = [t.artist, where, t.size && fmtBytes(t.size)].filter(Boolean).join(' · ');
   $('sheet-save').hidden = state.local.has(id) || !state.online || !state.server.has(id);
   $('sheet-source').hidden = !t.source_url;
+  $('sheet-add-pl').hidden = !state.server.has(id);
+  const pl = currentPlaylist();
+  $('sheet-remove-pl').hidden = !pl;
+  if (pl) $('sheet-remove-pl').textContent = `Remove from “${pl.name}”`;
   openSheet($('track-sheet'));
 }
 
@@ -840,6 +1000,13 @@ $('sheet-source').addEventListener('click', () => {
   if (t?.source_url) window.open(t.source_url, '_blank', 'noopener');
 });
 $('sheet-delete').addEventListener('click', () => { closeSheets(); deleteTrack(sheetTrack); });
+$('sheet-add-pl').addEventListener('click', () => { closeSheets(); openPickSheet(sheetTrack); });
+$('sheet-remove-pl').addEventListener('click', async () => {
+  closeSheets();
+  const pl = currentPlaylist();
+  const updated = pl && await playlistCall(`/playlists/${pl.id}/tracks/${sheetTrack}`, 'DELETE');
+  if (updated) setPlaylists(state.playlists.map((p) => (p.id === updated.id ? updated : p)));
+});
 
 async function openSettings() {
   $('autosave').checked = state.autosave;
@@ -891,6 +1058,7 @@ async function sync() {
     if (!(await checkHealth())) return;
     await flushPending();
     await refreshTracks();
+    await refreshPlaylists();
     await pollJobs();
     if (state.autosave) saveMissing();
   } catch {
@@ -927,6 +1095,7 @@ async function boot() {
   renderPlayState();
 
   try { await loadLocal(); } catch { toast('Couldn’t open saved songs on this device.'); }
+  renderViews();
   renderTracks();
   renderJobs();
 

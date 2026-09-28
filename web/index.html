@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>BerryTunes</title>
+  <title>BerryGoodTunes</title>
   <meta name="theme-color" content="#16121a">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="BerryTunes">
+  <meta name="apple-mobile-web-app-title" content="BerryGoodTunes">
   <link rel="apple-touch-icon" href="icons/icon-180.png">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="manifest" href="manifest.webmanifest">
@@ -16,7 +16,7 @@
 </head>
 <body>
   <header class="top">
-    <h1>BerryTunes</h1>
+    <h1>BerryGoodTunes</h1>
     <button id="status" class="status" type="button" aria-label="Server status">
       <span class="dot"></span><span id="status-text">Checking…</span>
     </button>
@@ -34,6 +34,8 @@
     <ul id="jobs" class="jobs" aria-live="polite"></ul>
 
     <input id="search" class="search" type="search" placeholder="Search your library">
+
+    <nav id="views" class="views" aria-label="Playlists"></nav>
 
     <div id="list-actions" class="list-actions" hidden>
       <button id="play-all" type="button">Play</button>
@@ -79,10 +81,27 @@
   <section id="track-sheet" class="sheet" hidden>
     <h3 id="sheet-title"></h3>
     <p id="sheet-sub"></p>
+    <button id="sheet-add-pl" type="button">Add to playlist…</button>
+    <button id="sheet-remove-pl" type="button" hidden>Remove from playlist</button>
     <button id="sheet-save" type="button">Save to this device</button>
     <button id="sheet-source" type="button">Open original link</button>
     <button id="sheet-delete" class="danger" type="button">Delete song</button>
     <button class="sheet-cancel" type="button">Cancel</button>
+  </section>
+
+  <section id="playlist-sheet" class="sheet" hidden>
+    <h3 id="pl-sheet-title"></h3>
+    <p id="pl-sheet-sub"></p>
+    <button id="pl-rename" type="button">Rename playlist</button>
+    <button id="pl-delete" class="danger" type="button">Delete playlist</button>
+    <button class="sheet-cancel" type="button">Cancel</button>
+  </section>
+
+  <section id="pick-sheet" class="sheet" hidden>
+    <h3 id="pick-title">Add to…</h3>
+    <div id="pick-list" class="pick-list"></div>
+    <button id="pick-new" type="button">+ New playlist</button>
+    <button class="sheet-cancel" type="button">Done</button>
   </section>
 
   <section id="settings-sheet" class="sheet" hidden>

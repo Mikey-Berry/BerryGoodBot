@@ -1,6 +1,6 @@
-# Restarts the BerryTunes server, e.g. after copying in updated files.
+# Restarts the BerryGoodTunes server, e.g. after copying in updated files.
 $ErrorActionPreference = 'Continue'
-$taskName = 'BerryTunes'
+$taskName = 'BerryTunes'  # original name, kept so existing installs keep working
 
 Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 # Stopping the task doesn't always stop the Python process it launched, so end it directly.
@@ -11,7 +11,7 @@ Start-Sleep -Seconds 2
 
 if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
     Start-ScheduledTask -TaskName $taskName
-    Write-Host 'BerryTunes is restarting. Give it up to a minute (it checks for a yt-dlp update first).'
+    Write-Host 'BerryGoodTunes is restarting. Give it up to a minute (it checks for a yt-dlp update first).'
 } else {
     Write-Host 'Server stopped. Auto-start is not installed, so start it with start.cmd or install-autostart.cmd.'
 }

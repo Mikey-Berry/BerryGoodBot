@@ -1,6 +1,6 @@
 {
-  "name": "BerryTunes",
-  "short_name": "BerryTunes",
+  "name": "BerryGoodTunes",
+  "short_name": "BerryGoodTunes",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

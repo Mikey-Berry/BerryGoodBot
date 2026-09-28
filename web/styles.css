@@ -198,3 +198,28 @@ main { padding: 4px 16px 0; }
   white-space: pre-wrap; -webkit-user-select: text; user-select: text;
 }
 .row.warn > span:last-child { color: var(--bad); font-weight: 600; }
+
+/* Playlist tabs */
+.views {
+  display: flex; align-items: center; gap: 8px; overflow-x: auto; margin: 0 -16px 8px; padding: 2px 16px;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.views::-webkit-scrollbar { display: none; }
+.chip {
+  flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 99px;
+  background: var(--surface); color: var(--muted); font-size: 14px; font-weight: 500; white-space: nowrap;
+}
+.chip small { font-size: 12px; opacity: .7; }
+.chip.on { background: var(--accent); color: #fff; }
+.chip.new { color: var(--accent); }
+.chip-more svg { width: 16px; height: 16px; display: block; }
+
+/* Add-to-playlist picker */
+.pick-list { display: grid; gap: 6px; max-height: 45vh; overflow-y: auto; }
+.pick {
+  display: flex; align-items: center; justify-content: space-between; padding: 13px 14px;
+  border-radius: 12px; background: var(--surface-2); text-align: left; font-weight: 500;
+}
+.pick .check { width: 20px; height: 20px; color: var(--ok); }
+.pick .check svg { width: 20px; height: 20px; }
+.empty-note { color: var(--muted); margin: 4px 2px; font-size: 14px; }

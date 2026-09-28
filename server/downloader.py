@@ -16,7 +16,8 @@ from yt_dlp import YoutubeDL
 
 from library import Library
 
-MAX_JOBS_KEPT = 30  # finished jobs remembered for the app; queued ones are never dropped
+MAX_JOBS_KEPT = 30  # finished downloads remembered for the app; queued ones are never dropped
+MAX_ERRORS_KEPT = 200  # failed ones are kept longer so they can be retried
 # Pause between downloads (randomised) so a long playlist doesn't look like a bot to YouTube.
 PAUSE_BETWEEN_DOWNLOADS = (4, 8)
 # YouTube sometimes refuses a download with 403 Forbidden; it usually works a few minutes later.
@@ -55,7 +56,8 @@ class Downloader:
 
     # ---- public API -------------------------------------------------------
 
-    def submit(self, url: str, title: str | None = None) -> dict:
+    def submit(self, url: str, title: str | None = None, playlist_id: str | None = None,
+               position: int | None = None) -> dict:
         job = {
             "id": uuid.uuid4().hex[:12],
             "url": url,
@@ -70,12 +72,28 @@ class Downloader:
             "finished_at": None,
             "playlist": None,  # {"added": n, "already": n} for playlist jobs
             "attempt": 1,
+            # Set for songs from an imported YouTube playlist: which app playlist, and where in it.
+            "playlist_id": playlist_id,
+            "position": position,
         }
         with self._lock:
             self.jobs[job["id"]] = job
             self._trim()
         self._queue.put(job["id"])
         return job
+
+    def retry(self, job_ids: list[str]) -> int:
+        """Queue failed downloads again, each with a fresh set of attempts."""
+        count = 0
+        with self._lock:
+            for job_id in job_ids:
+                job = self.jobs.get(job_id)
+                if not job or job["status"] != "error" or job["kind"] != "video":
+                    continue
+                job.update(status="queued", progress=0.0, attempt=1, error=None, finished_at=None)
+                self._queue.put(job_id)
+                count += 1
+        return count
 
     def cancel_queued(self) -> int:
         """Drop every job that hasn't started yet (e.g. the rest of a big playlist)."""
@@ -92,10 +110,10 @@ class Downloader:
     # ---- internals --------------------------------------------------------
 
     def _trim(self):
-        finished = [j for j in self.jobs.values() if j["status"] in ("done", "error")]
-        finished.sort(key=lambda j: j["created_at"])
-        while len(finished) > MAX_JOBS_KEPT:
-            del self.jobs[finished.pop(0)["id"]]
+        for status, keep in (("done", MAX_JOBS_KEPT), ("error", MAX_ERRORS_KEPT)):
+            finished = sorted((j for j in self.jobs.values() if j["status"] == status), key=lambda j: j["created_at"])
+            for job in finished[:max(0, len(finished) - keep)]:
+                del self.jobs[job["id"]]
 
     def _update(self, job_id: str, **fields):
         with self._lock:
@@ -112,10 +130,13 @@ class Downloader:
                 # Claim it so a cancel arriving now can't remove it mid-download.
                 job["status"] = "downloading"
                 url = job["url"]
+                playlist_id, position = job["playlist_id"], job["position"]
             downloaded = False
             try:
                 result = self._run(job_id, url)
                 downloaded = result.pop("downloaded", False)
+                if playlist_id and result.get("track_id"):
+                    self.library.add_to_playlist(playlist_id, result["track_id"], position)
                 self._update(job_id, status="done", progress=1.0, error=None, finished_at=time.time(), **result)
             except Exception as e:  # yt-dlp raises many types; surface them all to the UI
                 error = friendly_error(e)
@@ -134,8 +155,10 @@ class Downloader:
         """Queue every video in a playlist as its own job, skipping ones already in the library."""
         title = raw.get("title") or "Playlist"
         self._update(job_id, kind="playlist", title=title, status="processing")
+        # Songs also land in an app playlist of the same name, in the YouTube playlist's order.
+        app_playlist = self.library.find_playlist(title) or self.library.create_playlist(title)
         added = already = 0
-        for entry in raw.get("entries") or []:
+        for position, entry in enumerate(raw.get("entries") or []):
             # Channel pages list sub-playlists (Videos, Shorts, ...); only take actual videos.
             if not entry or entry.get("_type") == "playlist":
                 continue
@@ -143,14 +166,16 @@ class Downloader:
             if not url:
                 continue
             ie_key = entry.get("ie_key") or entry.get("extractor_key")
-            if ie_key and entry.get("id") and self.library.find_by_source(f"{ie_key}:{entry['id']}"):
+            existing = ie_key and entry.get("id") and self.library.find_by_source(f"{ie_key}:{entry['id']}")
+            if existing:
+                self.library.add_to_playlist(app_playlist["id"], existing["id"], position)
                 already += 1
                 continue
-            self.submit(url, title=entry.get("title"))
+            self.submit(url, title=entry.get("title"), playlist_id=app_playlist["id"], position=position)
             added += 1
         if not added and not already:
             raise DownloadError("Couldn't find any videos in that playlist.")
-        return {"title": title, "playlist": {"added": added, "already": already}}
+        return {"title": title, "playlist": {"added": added, "already": already, "name": app_playlist["name"]}}
 
     def _run(self, job_id: str, url: str) -> dict:
         track_id = uuid.uuid4().hex[:12]
