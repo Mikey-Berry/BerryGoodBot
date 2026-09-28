@@ -4,7 +4,7 @@ param([switch]$Log)
 $ErrorActionPreference = 'Continue'
 $server = Join-Path (Split-Path -Parent $PSScriptRoot) 'server'
 $python = Join-Path $server '.venv\Scripts\python.exe'
-if (-not (Test-Path $python)) { throw 'Run windows\setup.ps1 first.' }
+if (-not (Test-Path $python)) { throw 'Run windows\setup.cmd first.' }
 Set-Location $server
 
 # YouTube changes often; a fresh yt-dlp on every start avoids most "it stopped working" moments.

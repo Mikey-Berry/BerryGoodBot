@@ -1,5 +1,5 @@
 # One-time setup for the BerryTunes server.
-# Run from PowerShell:  powershell -ExecutionPolicy Bypass -File windows\setup.ps1
+# Easiest: double-click windows\setup.cmd (or: powershell -ExecutionPolicy Bypass -File windows\setup.ps1)
 $ErrorActionPreference = 'Stop'
 $server = Join-Path (Split-Path -Parent $PSScriptRoot) 'server'
 
@@ -61,6 +61,6 @@ tailscale serve status
 
 Write-Host ''
 Write-Host 'Done. Next:' -ForegroundColor Green
-Write-Host '  1. Start the server now:        powershell -ExecutionPolicy Bypass -File windows\start.ps1'
-Write-Host '  2. Start it at every login:     powershell -ExecutionPolicy Bypass -File windows\install-autostart.ps1'
+Write-Host '  1. Double-click windows\install-autostart.cmd (starts the server now and at every login).'
+Write-Host '  2. Or double-click windows\start.cmd to run it in a visible window instead (not both).'
 Write-Host '  3. Open the https://....ts.net address shown above in Safari on your iPhone, then Share > Add to Home Screen.'

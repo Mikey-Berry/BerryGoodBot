@@ -19,19 +19,16 @@ iPhone (home-screen app)  ──Tailscale──▶  Windows PC
 
 ### 1. On the Windows PC
 
-1. Download this repo (Code → Download ZIP, or `git clone`) somewhere permanent, e.g. `C:\BerryGoodBot`.
-2. Open **PowerShell** in that folder and run:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File windows\setup.ps1
-   ```
+1. Download this repo (Code → Download ZIP, then right-click → **Extract All**) and put the folder somewhere permanent. Don't move it after step 3, or auto-start loses track of it.
+2. In the `windows` folder, **double-click `setup.cmd`**.
    This installs Python, ffmpeg, Deno (which yt-dlp needs for YouTube) and Tailscale if they're missing, sets up the server and shares it over Tailscale.
-   - On first run, Tailscale will ask you to **log in**. If it prints a link about **enabling HTTPS**, open it and click enable. Then run the script again.
+   - On first run, Tailscale will ask you to **log in**. If it prints a link about **enabling HTTPS**, open it and click enable. Then run `setup.cmd` again.
    - At the end it prints an address like `https://your-pc.tail1234.ts.net`. **Keep it; that's your app's address.**
-3. Make it start automatically whenever you log in:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File windows\install-autostart.ps1
-   ```
-   (Undo with `... install-autostart.ps1 -Remove`.) To run it by hand with a visible console instead, use `windows\start.ps1`.
+3. **Double-click `install-autostart.cmd`.** The server now starts hidden whenever you log in, and starts right away too.
+   - To remove auto-start, run `install-autostart.cmd -Remove` from a terminal.
+   - `start.cmd` runs the server in a visible window instead, which is handy for watching errors. Don't use it while auto-start is running; both use the same port.
+
+   Use the `.cmd` files rather than the `.ps1` ones. Windows blocks `.ps1` scripts by default ("running scripts is disabled on this system"), and the `.cmd` files get around that for these scripts only.
 4. Optional: in Windows **Settings → System → Power**, set sleep to "Never" while plugged in, or at least long enough to finish downloads you queue from your phone.
 
 ### 2. On the iPhone
@@ -91,7 +88,7 @@ Back up `server\library\` if you care about it. iOS can clear a web app's saved 
 ```
 server/    FastAPI app: API + serves the web app (app.py, downloader.py, library.py)
 web/       The phone app: plain HTML/CSS/JS, service worker for offline use
-windows/   setup.ps1, start.ps1, install-autostart.ps1
+windows/   setup, start and install-autostart scripts (.cmd launchers for the .ps1 files)
 ```
 
 Run the server anywhere for development: `pip install -r server/requirements.txt`, then `cd server && uvicorn app:app --port 8765`, then open http://localhost:8765. Needs `ffmpeg` on PATH (or set `BERRY_FFMPEG` to its folder).
