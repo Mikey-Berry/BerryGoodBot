@@ -259,7 +259,6 @@ async function pollJobs() {
   }
   if (state.jobs.some((j) => j.status === 'done' && j.track_id && !state.server.has(j.track_id))) {
     await refreshTracks().catch(() => {});
-    await refreshPlaylists().catch(() => {});
     if (state.autosave) saveMissing();
   }
   renderJobs();

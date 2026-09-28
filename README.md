@@ -57,8 +57,8 @@ Now in YouTube (or any app), tap **Share → Add to BerryGoodTunes**. Open Berry
 - **Add:** paste a link and tap **Add**. Progress shows at the top.
 - **Whole playlists:** share or paste a **playlist** link (on YouTube: open the playlist, then Share). Every song in it gets queued. Songs already in your library are skipped, and deleted or private videos show an error you can dismiss. Downloads run one at a time with a short pause between them so YouTube doesn't flag a burst of requests. A 50-song playlist takes a few minutes. **Cancel** on the "songs waiting" row stops the rest.
   - A link to a *video that's playing inside a playlist* (`watch?v=…&list=…`) adds just that one video.
-  - The songs also go into an **app playlist with the same name**, in the YouTube playlist's order. Adding the same YouTube playlist again later only fetches the new songs and adds them to that playlist.
-- **Failed downloads:** when two or more fail, a **Retry all** row appears above them. Each failed song also has its own **Retry**, and retried songs keep their place in their playlist.
+  - The songs go into your library like any others; put them into your own playlists if you want them grouped. Adding the same YouTube playlist again later only fetches songs you don't already have.
+- **Failed downloads:** when two or more fail, a **Retry all** row appears above them. Each failed song also has its own **Retry**, and retried songs don't create duplicates.
 - **Playlists:** the row of tabs under the search box switches between **All songs** and your playlists. Use them to keep podcasts and learning content apart from music.
   - **+ New** creates a playlist.
   - A song's **⋯** menu → **Add to playlist…** adds or removes it (tap a playlist to toggle it). When viewing a playlist, the menu also offers **Remove from "…"**.

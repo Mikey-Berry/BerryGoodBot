@@ -56,8 +56,7 @@ class Downloader:
 
     # ---- public API -------------------------------------------------------
 
-    def submit(self, url: str, title: str | None = None, playlist_id: str | None = None,
-               position: int | None = None) -> dict:
+    def submit(self, url: str, title: str | None = None) -> dict:
         job = {
             "id": uuid.uuid4().hex[:12],
             "url": url,
@@ -72,9 +71,6 @@ class Downloader:
             "finished_at": None,
             "playlist": None,  # {"added": n, "already": n} for playlist jobs
             "attempt": 1,
-            # Set for songs from an imported YouTube playlist: which app playlist, and where in it.
-            "playlist_id": playlist_id,
-            "position": position,
         }
         with self._lock:
             self.jobs[job["id"]] = job
@@ -130,13 +126,10 @@ class Downloader:
                 # Claim it so a cancel arriving now can't remove it mid-download.
                 job["status"] = "downloading"
                 url = job["url"]
-                playlist_id, position = job["playlist_id"], job["position"]
             downloaded = False
             try:
                 result = self._run(job_id, url)
                 downloaded = result.pop("downloaded", False)
-                if playlist_id and result.get("track_id"):
-                    self.library.add_to_playlist(playlist_id, result["track_id"], position)
                 self._update(job_id, status="done", progress=1.0, error=None, finished_at=time.time(), **result)
             except Exception as e:  # yt-dlp raises many types; surface them all to the UI
                 error = friendly_error(e)
@@ -155,10 +148,8 @@ class Downloader:
         """Queue every video in a playlist as its own job, skipping ones already in the library."""
         title = raw.get("title") or "Playlist"
         self._update(job_id, kind="playlist", title=title, status="processing")
-        # Songs also land in an app playlist of the same name, in the YouTube playlist's order.
-        app_playlist = self.library.find_playlist(title) or self.library.create_playlist(title)
         added = already = 0
-        for position, entry in enumerate(raw.get("entries") or []):
+        for entry in raw.get("entries") or []:
             # Channel pages list sub-playlists (Videos, Shorts, ...); only take actual videos.
             if not entry or entry.get("_type") == "playlist":
                 continue
@@ -166,16 +157,14 @@ class Downloader:
             if not url:
                 continue
             ie_key = entry.get("ie_key") or entry.get("extractor_key")
-            existing = ie_key and entry.get("id") and self.library.find_by_source(f"{ie_key}:{entry['id']}")
-            if existing:
-                self.library.add_to_playlist(app_playlist["id"], existing["id"], position)
+            if ie_key and entry.get("id") and self.library.find_by_source(f"{ie_key}:{entry['id']}"):
                 already += 1
                 continue
-            self.submit(url, title=entry.get("title"), playlist_id=app_playlist["id"], position=position)
+            self.submit(url, title=entry.get("title"))
             added += 1
         if not added and not already:
             raise DownloadError("Couldn't find any videos in that playlist.")
-        return {"title": title, "playlist": {"added": added, "already": already, "name": app_playlist["name"]}}
+        return {"title": title, "playlist": {"added": added, "already": already}}
 
     def _run(self, job_id: str, url: str) -> dict:
         track_id = uuid.uuid4().hex[:12]

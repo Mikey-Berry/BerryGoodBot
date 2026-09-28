@@ -85,7 +85,6 @@ class Library:
             for pl in self._playlists.values():
                 if track_id in pl["track_ids"]:
                     pl["track_ids"].remove(track_id)
-                    pl["positions"].pop(track_id, None)
             self._save_playlists()
         for name in (track["audio_file"], track.get("cover_file")):
             if name:
@@ -105,15 +104,10 @@ class Library:
 
     def create_playlist(self, name: str) -> dict:
         with self._lock:
-            pl = {"id": uuid.uuid4().hex[:12], "name": name, "track_ids": [], "positions": {}, "created_at": time.time()}
+            pl = {"id": uuid.uuid4().hex[:12], "name": name, "track_ids": [], "created_at": time.time()}
             self._playlists[pl["id"]] = pl
             self._save_playlists()
             return self._public_playlist(pl)
-
-    def find_playlist(self, name: str) -> dict | None:
-        with self._lock:
-            pl = next((pl for pl in self._playlists.values() if pl["name"].casefold() == name.casefold()), None)
-            return self._public_playlist(pl) if pl else None
 
     def rename_playlist(self, playlist_id: str, name: str) -> dict | None:
         with self._lock:
@@ -132,21 +126,14 @@ class Library:
             self._save_playlists()
             return True
 
-    def add_to_playlist(self, playlist_id: str, track_id: str, position: int | None = None) -> dict | None:
-        """Add a song. With a position (its place in an imported YouTube playlist) it's slotted in
-        order even when downloads finish out of order; without one it goes at the end."""
+    def add_to_playlist(self, playlist_id: str, track_id: str) -> dict | None:
+        """Add a song to the end of a playlist (no-op if it's already there)."""
         with self._lock:
             pl = self._playlists.get(playlist_id)
             if not pl or track_id not in self._tracks:
                 return None
             if track_id not in pl["track_ids"]:
-                ids = pl["track_ids"]
-                if position is None:
-                    ids.append(track_id)
-                else:
-                    pl["positions"][track_id] = position
-                    at = next((i for i, t in enumerate(ids) if pl["positions"].get(t, float("inf")) > position), len(ids))
-                    ids.insert(at, track_id)
+                pl["track_ids"].append(track_id)
                 self._save_playlists()
             return self._public_playlist(pl)
 
@@ -157,6 +144,5 @@ class Library:
                 return None
             if track_id in pl["track_ids"]:
                 pl["track_ids"].remove(track_id)
-                pl["positions"].pop(track_id, None)
                 self._save_playlists()
             return self._public_playlist(pl)
