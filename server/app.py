@@ -85,6 +85,11 @@ def create_job(req: JobRequest):
     return downloader.submit(match.group(0))
 
 
+@app.delete("/api/jobs/queued")
+def cancel_queued():
+    return {"cancelled": downloader.cancel_queued()}
+
+
 def _404():
     raise HTTPException(404, "Not found")
 

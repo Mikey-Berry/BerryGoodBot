@@ -2,6 +2,7 @@
 
 import os
 import queue
+import re
 import shutil
 import tempfile
 import threading
@@ -13,7 +14,9 @@ from yt_dlp import YoutubeDL
 
 from library import Library
 
-MAX_JOBS_KEPT = 30
+MAX_JOBS_KEPT = 30  # finished jobs remembered for the app; queued ones are never dropped
+# Pause between downloads so a long playlist doesn't look like a bot burst to YouTube.
+PAUSE_BETWEEN_DOWNLOADS = 3
 
 
 class DownloadError(Exception):
@@ -32,24 +35,34 @@ class Downloader:
 
     # ---- public API -------------------------------------------------------
 
-    def submit(self, url: str) -> dict:
+    def submit(self, url: str, title: str | None = None) -> dict:
         job = {
             "id": uuid.uuid4().hex[:12],
             "url": url,
+            "kind": "video",  # becomes "playlist" once the link turns out to be one
             "status": "queued",  # queued | downloading | processing | done | error
             "progress": 0.0,
-            "title": None,
+            "title": title,
             "track_id": None,
             "error": None,
             "duplicate": False,
             "created_at": time.time(),
             "finished_at": None,
+            "playlist": None,  # {"added": n, "already": n} for playlist jobs
         }
         with self._lock:
             self.jobs[job["id"]] = job
             self._trim()
         self._queue.put(job["id"])
         return job
+
+    def cancel_queued(self) -> int:
+        """Drop every job that hasn't started yet (e.g. the rest of a big playlist)."""
+        with self._lock:
+            queued = [j for j in self.jobs if self.jobs[j]["status"] == "queued"]
+            for job_id in queued:
+                del self.jobs[job_id]
+        return len(queued)
 
     def list_jobs(self) -> list[dict]:
         with self._lock:
@@ -60,26 +73,57 @@ class Downloader:
     def _trim(self):
         finished = [j for j in self.jobs.values() if j["status"] in ("done", "error")]
         finished.sort(key=lambda j: j["created_at"])
-        while len(self.jobs) > MAX_JOBS_KEPT and finished:
+        while len(finished) > MAX_JOBS_KEPT:
             del self.jobs[finished.pop(0)["id"]]
 
     def _update(self, job_id: str, **fields):
         with self._lock:
-            self.jobs[job_id].update(fields)
+            if job_id in self.jobs:  # may have been cancelled or trimmed meanwhile
+                self.jobs[job_id].update(fields)
 
     def _worker(self):
         while True:
             job_id = self._queue.get()
+            with self._lock:
+                job = self.jobs.get(job_id)
+                if not job:  # cancelled while queued
+                    continue
+                # Claim it so a cancel arriving now can't remove it mid-download.
+                job["status"] = "downloading"
+                url = job["url"]
+            downloaded = False
             try:
-                track, duplicate = self._run(job_id)
-                self._update(job_id, status="done", progress=1.0, track_id=track["id"], title=track["title"],
-                             duplicate=duplicate, finished_at=time.time())
+                result = self._run(job_id, url)
+                downloaded = result.pop("downloaded", False)
+                self._update(job_id, status="done", progress=1.0, finished_at=time.time(), **result)
             except Exception as e:  # yt-dlp raises many types; surface them all to the UI
-                msg = str(e).removeprefix("ERROR: ").strip() or type(e).__name__
-                self._update(job_id, status="error", error=msg, finished_at=time.time())
+                self._update(job_id, status="error", error=friendly_error(e), finished_at=time.time())
+            if downloaded and not self._queue.empty():
+                time.sleep(PAUSE_BETWEEN_DOWNLOADS)
 
-    def _run(self, job_id: str) -> tuple[dict, bool]:
-        url = self.jobs[job_id]["url"]
+    def _expand_playlist(self, job_id: str, raw: dict) -> dict:
+        """Queue every video in a playlist as its own job, skipping ones already in the library."""
+        title = raw.get("title") or "Playlist"
+        self._update(job_id, kind="playlist", title=title, status="processing")
+        added = already = 0
+        for entry in raw.get("entries") or []:
+            # Channel pages list sub-playlists (Videos, Shorts, ...); only take actual videos.
+            if not entry or entry.get("_type") == "playlist":
+                continue
+            url = entry.get("url") or entry.get("webpage_url")
+            if not url:
+                continue
+            ie_key = entry.get("ie_key") or entry.get("extractor_key")
+            if ie_key and entry.get("id") and self.library.find_by_source(f"{ie_key}:{entry['id']}"):
+                already += 1
+                continue
+            self.submit(url, title=entry.get("title"))
+            added += 1
+        if not added and not already:
+            raise DownloadError("Couldn't find any videos in that playlist.")
+        return {"title": title, "playlist": {"added": added, "already": already}}
+
+    def _run(self, job_id: str, url: str) -> dict:
         track_id = uuid.uuid4().hex[:12]
         tmp = Path(tempfile.mkdtemp(prefix="berry-"))
 
@@ -116,11 +160,11 @@ class Downloader:
             with YoutubeDL(opts) as ydl:
                 raw = ydl.extract_info(url, download=False, process=False)
                 if raw.get("_type") == "playlist":
-                    raise DownloadError("That link is a playlist. Paste a link to a single video.")
+                    return self._expand_playlist(job_id, raw)
                 if raw.get("id") and raw.get("extractor_key"):
                     existing = self.library.find_by_source(f"{raw['extractor_key']}:{raw['id']}")
                     if existing:
-                        return existing, True
+                        return {"track_id": existing["id"], "title": existing["title"], "duplicate": True}
                 self._update(job_id, title=raw.get("title"), status="downloading")
                 info = ydl.process_ie_result(raw, download=True)
 
@@ -133,9 +177,18 @@ class Downloader:
                 "source_url": info.get("webpage_url") or url,
                 "source_id": f"{info.get('extractor_key')}:{info.get('id')}",
             }
-            return self.library.add(track_id, audio, covers[0] if covers else None, meta), False
+            track = self.library.add(track_id, audio, covers[0] if covers else None, meta)
+            return {"track_id": track["id"], "title": track["title"], "downloaded": True}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def friendly_error(e: Exception) -> str:
+    """'ERROR: [youtube] abc123: Private video (caused by ...)' -> 'Private video'."""
+    msg = str(e).removeprefix("ERROR: ").strip()
+    msg = re.sub(r"^\[[\w:]+\] [^:]+: ", "", msg)
+    msg = re.sub(r" \(caused by .*\)$", "", msg, flags=re.S)
+    return msg or type(e).__name__
 
 
 def default_ffmpeg() -> str | None:

@@ -13,25 +13,22 @@ iPhone (home-screen app)  ──Tailscale──▶  Windows PC
 - **Links you add while the PC is off wait on the phone** and are sent automatically when the PC is reachable again.
 - **Nothing is exposed to the internet.** Tailscale makes the PC reachable only from your own signed-in devices.
 - **Audio is YouTube's native AAC stream (`.m4a`), saved without re-encoding.** Sources that aren't AAC are converted once at 192 kbps.
-- **Supported sites:** YouTube and the [~1,800 sites yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md), one video per link (no playlists yet).
+- **Supported sites:** YouTube and the [~1,800 sites yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md), either single videos or whole playlists.
 
 ## Setup
 
 ### 1. On the Windows PC
 
-1. Download this repo (Code → Download ZIP, or `git clone`) somewhere permanent, e.g. `C:\BerryGoodBot`.
-2. Open **PowerShell** in that folder and run:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File windows\setup.ps1
-   ```
+1. Download this repo (Code → Download ZIP, then right-click → **Extract All**) and put the folder somewhere permanent. Don't move it after step 3, or auto-start loses track of it.
+2. In the `windows` folder, **double-click `setup.cmd`**.
    This installs Python, ffmpeg, Deno (which yt-dlp needs for YouTube) and Tailscale if they're missing, sets up the server and shares it over Tailscale.
-   - On first run, Tailscale will ask you to **log in**. If it prints a link about **enabling HTTPS**, open it and click enable. Then run the script again.
+   - On first run, Tailscale will ask you to **log in**. If it prints a link about **enabling HTTPS**, open it and click enable. Then run `setup.cmd` again.
    - At the end it prints an address like `https://your-pc.tail1234.ts.net`. **Keep it; that's your app's address.**
-3. Make it start automatically whenever you log in:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File windows\install-autostart.ps1
-   ```
-   (Undo with `... install-autostart.ps1 -Remove`.) To run it by hand with a visible console instead, use `windows\start.ps1`.
+3. **Double-click `install-autostart.cmd`.** The server now starts hidden whenever you log in, and starts right away too.
+   - To remove auto-start, run `install-autostart.cmd -Remove` from a terminal.
+   - `start.cmd` runs the server in a visible window instead, which is handy for watching errors. Don't use it while auto-start is running; both use the same port.
+
+   Use the `.cmd` files rather than the `.ps1` ones. Windows blocks `.ps1` scripts by default ("running scripts is disabled on this system"), and the `.cmd` files get around that for these scripts only.
 4. Optional: in Windows **Settings → System → Power**, set sleep to "Never" while plugged in, or at least long enough to finish downloads you queue from your phone.
 
 ### 2. On the iPhone
@@ -57,6 +54,8 @@ Now in YouTube (or any app), tap **Share → Add to BerryTunes**. Open BerryTune
 ## Using it
 
 - **Add:** paste a link and tap **Add**. Progress shows at the top.
+- **Whole playlists:** share or paste a **playlist** link (on YouTube: open the playlist, then Share). Every song in it gets queued. Songs already in your library are skipped, and deleted or private videos show an error you can dismiss. Downloads run one at a time with a short pause between them so YouTube doesn't flag a burst of requests. A 50-song playlist takes a few minutes. **Cancel** on the "songs waiting" row stops the rest.
+  - A link to a *video that's playing inside a playlist* (`watch?v=…&list=…`) adds just that one video.
 - **Play:** tap a song. It plays through the list, and shuffle and repeat are in the full player (tap the mini player). Lock-screen controls and artwork work.
 - **Song status icons:** ✅ saved on this device (plays offline) · ☁️ on your PC only (plays only while the PC is reachable) · ⬇️ saving now.
 - **⋯ menu:** save to this device, open the original video, or delete. Delete removes the song from the PC and this phone.
@@ -84,14 +83,14 @@ Back up `server\library\` if you care about it. iOS can clear a web app's saved 
 ## Known limits
 
 - **Background playback:** iOS has historically been flaky with audio in home-screen web apps (playback stopping when you lock the phone or switch apps). Recent iOS versions are much better, but check this first on your phone.
-- **Playlists:** not supported yet. A playlist link is rejected with a message; links to a video inside a playlist download just that video.
+- **Playlists in the app:** a playlist link adds its songs to your library, but the app doesn't have its own playlists yet. Everything goes in one list.
 
 ## Project layout
 
 ```
 server/    FastAPI app: API + serves the web app (app.py, downloader.py, library.py)
 web/       The phone app: plain HTML/CSS/JS, service worker for offline use
-windows/   setup.ps1, start.ps1, install-autostart.ps1
+windows/   setup, start and install-autostart scripts (.cmd launchers for the .ps1 files)
 ```
 
 Run the server anywhere for development: `pip install -r server/requirements.txt`, then `cd server && uvicorn app:app --port 8765`, then open http://localhost:8765. Needs `ffmpeg` on PATH (or set `BERRY_FFMPEG` to its folder).

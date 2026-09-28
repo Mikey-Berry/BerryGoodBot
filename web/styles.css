@@ -74,6 +74,14 @@ main { padding: 4px 16px 0; }
 }
 .add button:disabled { opacity: .5; }
 .search { width: 100%; margin: 4px 0 8px; }
+.list-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 4px 0 6px; }
+.list-actions button {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 11px; border-radius: var(--radius); background: var(--surface);
+  color: var(--accent); font-weight: 600;
+}
+.list-actions button:active { background: var(--surface-2); }
+.list-actions svg { width: 20px; height: 20px; }
 
 /* Jobs */
 .jobs { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 8px; }
@@ -89,6 +97,7 @@ main { padding: 4px 16px 0; }
 .job.error small { color: var(--bad); white-space: normal; }
 .job .bar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width .3s; }
 .job button { color: var(--muted); padding: 6px; }
+.job .text-btn { color: var(--accent); font-weight: 600; font-size: 14px; padding: 6px 4px; }
 
 /* Track list */
 .tracks { list-style: none; margin: 0; padding: 0; }
