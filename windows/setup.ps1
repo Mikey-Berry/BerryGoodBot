@@ -1,4 +1,4 @@
-# One-time setup for the BerryTunes server.
+# One-time setup for the BerryGoodTunes server.
 # Easiest: double-click windows\setup.cmd (or: powershell -ExecutionPolicy Bypass -File windows\setup.ps1)
 $ErrorActionPreference = 'Stop'
 $server = Join-Path (Split-Path -Parent $PSScriptRoot) 'server'

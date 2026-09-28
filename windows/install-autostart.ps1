@@ -1,8 +1,8 @@
-# Registers a hidden scheduled task that starts BerryTunes whenever you log in.
+# Registers a hidden scheduled task that starts BerryGoodTunes whenever you log in.
 # Remove it again with:  powershell -ExecutionPolicy Bypass -File windows\install-autostart.ps1 -Remove
 param([switch]$Remove)
 $ErrorActionPreference = 'Stop'
-$taskName = 'BerryTunes'
+$taskName = 'BerryTunes'  # original name, kept so existing installs keep working
 
 if ($Remove) {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
@@ -19,4 +19,4 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
-Write-Host 'BerryTunes will now start automatically when you log in (and is starting now).'
+Write-Host 'BerryGoodTunes will now start automatically when you log in (and is starting now).'

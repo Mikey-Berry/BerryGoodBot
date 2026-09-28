@@ -2,8 +2,10 @@
 
 import os
 import queue
+import random
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -14,9 +16,28 @@ from yt_dlp import YoutubeDL
 
 from library import Library
 
-MAX_JOBS_KEPT = 30  # finished jobs remembered for the app; queued ones are never dropped
-# Pause between downloads so a long playlist doesn't look like a bot burst to YouTube.
-PAUSE_BETWEEN_DOWNLOADS = 3
+MAX_JOBS_KEPT = 30  # finished downloads remembered for the app; queued ones are never dropped
+MAX_ERRORS_KEPT = 200  # failed ones are kept longer so they can be retried
+# Pause between downloads (randomised) so a long playlist doesn't look like a bot to YouTube.
+PAUSE_BETWEEN_DOWNLOADS = (4, 8)
+# YouTube sometimes refuses a download with 403 Forbidden; it usually works a few minutes later.
+MAX_ATTEMPTS = 3
+
+
+class _YtdlpLog:
+    """Send yt-dlp's warnings and errors to the server log instead of discarding them."""
+
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        print(f"[yt-dlp] {msg}", file=sys.stderr, flush=True)
+
+    def error(self, msg):
+        print(f"[yt-dlp] {msg}", file=sys.stderr, flush=True)
 
 
 class DownloadError(Exception):
@@ -49,12 +70,26 @@ class Downloader:
             "created_at": time.time(),
             "finished_at": None,
             "playlist": None,  # {"added": n, "already": n} for playlist jobs
+            "attempt": 1,
         }
         with self._lock:
             self.jobs[job["id"]] = job
             self._trim()
         self._queue.put(job["id"])
         return job
+
+    def retry(self, job_ids: list[str]) -> int:
+        """Queue failed downloads again, each with a fresh set of attempts."""
+        count = 0
+        with self._lock:
+            for job_id in job_ids:
+                job = self.jobs.get(job_id)
+                if not job or job["status"] != "error" or job["kind"] != "video":
+                    continue
+                job.update(status="queued", progress=0.0, attempt=1, error=None, finished_at=None)
+                self._queue.put(job_id)
+                count += 1
+        return count
 
     def cancel_queued(self) -> int:
         """Drop every job that hasn't started yet (e.g. the rest of a big playlist)."""
@@ -71,10 +106,10 @@ class Downloader:
     # ---- internals --------------------------------------------------------
 
     def _trim(self):
-        finished = [j for j in self.jobs.values() if j["status"] in ("done", "error")]
-        finished.sort(key=lambda j: j["created_at"])
-        while len(finished) > MAX_JOBS_KEPT:
-            del self.jobs[finished.pop(0)["id"]]
+        for status, keep in (("done", MAX_JOBS_KEPT), ("error", MAX_ERRORS_KEPT)):
+            finished = sorted((j for j in self.jobs.values() if j["status"] == status), key=lambda j: j["created_at"])
+            for job in finished[:max(0, len(finished) - keep)]:
+                del self.jobs[job["id"]]
 
     def _update(self, job_id: str, **fields):
         with self._lock:
@@ -95,11 +130,19 @@ class Downloader:
             try:
                 result = self._run(job_id, url)
                 downloaded = result.pop("downloaded", False)
-                self._update(job_id, status="done", progress=1.0, finished_at=time.time(), **result)
+                self._update(job_id, status="done", progress=1.0, error=None, finished_at=time.time(), **result)
             except Exception as e:  # yt-dlp raises many types; surface them all to the UI
-                self._update(job_id, status="error", error=friendly_error(e), finished_at=time.time())
+                error = friendly_error(e)
+                if "403" in error and job["attempt"] < MAX_ATTEMPTS:
+                    # Back of the queue: by the time it comes round again YouTube has usually relented.
+                    self._update(job_id, status="queued", progress=0.0, attempt=job["attempt"] + 1,
+                                 error=f"YouTube refused the download; retrying (attempt {job['attempt'] + 1} of {MAX_ATTEMPTS})")
+                    self._queue.put(job_id)
+                    downloaded = True  # pause before the next attempt too
+                else:
+                    self._update(job_id, status="error", error=error, finished_at=time.time())
             if downloaded and not self._queue.empty():
-                time.sleep(PAUSE_BETWEEN_DOWNLOADS)
+                time.sleep(random.uniform(*PAUSE_BETWEEN_DOWNLOADS))
 
     def _expand_playlist(self, job_id: str, raw: dict) -> dict:
         """Queue every video in a playlist as its own job, skipping ones already in the library."""
@@ -142,8 +185,8 @@ class Downloader:
             "noplaylist": True,
             "writethumbnail": True,
             "quiet": True,
-            "no_warnings": True,
             "noprogress": True,
+            "logger": _YtdlpLog(),
             "progress_hooks": [on_progress],
             "postprocessors": [
                 # Remuxes (no quality loss) when the source is already AAC.
@@ -189,6 +232,14 @@ def friendly_error(e: Exception) -> str:
     msg = re.sub(r"^\[[\w:]+\] [^:]+: ", "", msg)
     msg = re.sub(r" \(caused by .*\)$", "", msg, flags=re.S)
     return msg or type(e).__name__
+
+
+def js_runtime() -> str | None:
+    """yt-dlp needs a JavaScript runtime (Deno) to solve YouTube's checks; without one, many downloads fail."""
+    for name in ("deno", "node", "bun"):
+        if shutil.which(name):
+            return name
+    return None
 
 
 def default_ffmpeg() -> str | None:

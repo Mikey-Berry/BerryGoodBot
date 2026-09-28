@@ -1,4 +1,4 @@
-# Starts the BerryTunes server. Use -Log to write output to server\logs\server.log (used by auto-start).
+# Starts the BerryGoodTunes server. Use -Log to write output to server\logs\server.log (used by auto-start).
 param([switch]$Log)
 # 'Continue': uvicorn and pip write normal output to stderr, which 'Stop' would treat as fatal.
 $ErrorActionPreference = 'Continue'

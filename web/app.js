@@ -3,7 +3,13 @@
 /* ---------- helpers ---------- */
 
 const $ = (id) => document.getElementById(id);
-const audio = $('audio');
+// Two players take turns: the next song starts on the idle one just before the current one
+// ends, so the audio never stops. When it stops, even briefly, iOS mutes a backgrounded
+// web app until it's reopened.
+const players = [$('audio'), $('audio2')];
+let audio = players[0];
+const spareOf = () => (audio === players[0] ? players[1] : players[0]);
+const HANDOFF_SECONDS = 0.5;
 
 const ICONS = {
   play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
@@ -57,6 +63,17 @@ function toast(msg) {
   toastTimer = setTimeout(() => { el.hidden = true; }, 3500);
 }
 
+/* ---------- playback log (Settings → Playback log) ---------- */
+
+// A short on-device history of playback events, for diagnosing background audio on the phone.
+const playLog = prefs.get('playlog', []);
+function logPlay(msg) {
+  const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  playLog.push(`${t} ${document.hidden ? 'bg' : 'fg'}  ${msg}`);
+  if (playLog.length > 120) playLog.splice(0, playLog.length - 120);
+  prefs.set('playlog', playLog);
+}
+
 /* ---------- IndexedDB: saved songs live here ---------- */
 
 const db = (() => {
@@ -101,6 +118,8 @@ const state = {
   qi: -1,
   current: null,
   filter: '',
+  playlists: prefs.get('playlists', []), // cached so they still show with the PC off
+  view: prefs.get('view', 'all'),        // 'all' or a playlist id
   shuffle: prefs.get('shuffle', false),
   repeat: prefs.get('repeat', 'off'), // off | all | one
   autosave: prefs.get('autosave', true),
@@ -120,9 +139,12 @@ function allTracks() {
   return [...merged.values()].sort((a, b) => b.added_at - a.added_at);
 }
 
+const currentPlaylist = () => state.playlists.find((pl) => pl.id === state.view) || null;
+
 function visibleTracks() {
   const q = state.filter.trim().toLowerCase();
-  const list = allTracks();
+  const pl = currentPlaylist();
+  const list = pl ? pl.track_ids.map(trackById).filter(Boolean) : allTracks();
   return q ? list.filter((t) => `${t.title} ${t.artist}`.toLowerCase().includes(q)) : list;
 }
 
@@ -171,6 +193,7 @@ async function checkHealth() {
   try {
     const info = await (await api('/health', {}, 4000)).json();
     state.ytdlp = info.yt_dlp;
+    state.jsRuntime = info.js_runtime;
     setOnline(true);
     return true;
   } catch {
@@ -181,6 +204,18 @@ async function checkHealth() {
 async function refreshTracks() {
   const tracks = await (await api('/tracks')).json();
   state.server = new Map(tracks.map((t) => [t.id, t]));
+  renderTracks();
+}
+
+async function refreshPlaylists() {
+  setPlaylists(await (await api('/playlists')).json());
+}
+
+function setPlaylists(list) {
+  state.playlists = list;
+  prefs.set('playlists', list);
+  if (state.view !== 'all' && !currentPlaylist()) setView('all');
+  renderViews();
   renderTracks();
 }
 
@@ -259,15 +294,26 @@ function renderJobs() {
   }
   const queued = jobs.filter((j) => j.status === 'queued');
   if (queued.length === 1) {
-    items.push(row(queued[0], 'Queued'));
+    items.push(row(queued[0], queued[0].attempt > 1 ? queued[0].error : 'Queued'));
   } else if (queued.length > 1) {
     items.push(`<li class="job"><div class="label"><strong>${queued.length} songs waiting</strong>
       <small>Next: ${esc(queued[0].title || queued[0].url)}</small></div>
       <button type="button" class="text-btn" data-cancel-queued>Cancel</button></li>`);
   }
+  const failed = jobs.filter((j) => j.status === 'error');
+  if (failed.length > 1) {
+    const more = failed.length > 3 ? ` (showing 3)` : '';
+    items.push(`<li class="job error"><div class="label"><strong>${failed.length} downloads failed${more}</strong>
+      <small>Often temporary. Retrying later usually works.</small></div>
+      <button type="button" class="text-btn" data-retry-all>Retry all</button>
+      <button type="button" data-dismiss-all aria-label="Dismiss all">${ICONS.close}</button></li>`);
+  }
+  let shownFailed = 0;
   for (const j of jobs) {
+    if (j.status === 'error' && ++shownFailed > 3) continue;
     if (j.status === 'error') {
-      items.push(row(j, j.error, dismiss(j)));
+      const retry = j.kind === 'video' ? `<button type="button" class="text-btn" data-retry="${j.id}">Retry</button>` : '';
+      items.push(row(j, j.error, retry + dismiss(j)));
     } else if (j.status === 'done' && showDone(j)) {
       let label = j.duplicate ? 'Already in your library' : 'Added to your library';
       if (j.playlist) {
@@ -280,6 +326,16 @@ function renderJobs() {
   $('jobs').innerHTML = items.join('');
   clearTimeout(renderJobs.timer);
   if (state.jobs.some((j) => j.status === 'done' && showDone(j))) renderJobs.timer = setTimeout(renderJobs, 2000);
+}
+
+async function retryJobs(ids) {
+  try {
+    await api('/jobs/retry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+  } catch {
+    toast('Couldn’t reach your PC.');
+    return;
+  }
+  pollJobs();
 }
 
 async function cancelQueued() {
@@ -378,11 +434,129 @@ async function deleteTrack(id) {
   renderTracks();
 }
 
+/* ---------- playlists ---------- */
+
+function setView(view) {
+  state.view = view;
+  prefs.set('view', view);
+}
+
+function renderViews() {
+  const count = (pl) => pl.track_ids.filter((id) => trackById(id)).length;
+  const chip = (view, label, extra = '') =>
+    `<button type="button" class="chip${state.view === view ? ' on' : ''}" data-view="${view}">${label}${extra}</button>`;
+  $('views').innerHTML = chip('all', 'All songs')
+    + state.playlists.map((pl) => chip(pl.id, esc(pl.name), state.view === pl.id
+      ? ` <span class="chip-more" aria-label="Playlist options">${ICONS.more}</span>` : ` <small>${count(pl)}</small>`)).join('')
+    + `<button type="button" class="chip new" data-new-playlist>+ New</button>`;
+}
+
+async function playlistCall(path, method, body) {
+  if (!state.online) { toast('Connect to your PC to change playlists.'); return null; }
+  try {
+    const res = await api(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return await res.json();
+  } catch (e) {
+    toast(e instanceof ApiError ? e.message : 'Couldn’t reach your PC.');
+    return null;
+  }
+}
+
+async function newPlaylist() {
+  const name = prompt('Playlist name', '')?.trim();
+  if (!name) return null;
+  const pl = await playlistCall('/playlists', 'POST', { name });
+  if (pl) await refreshPlaylists().catch(() => {});
+  return pl;
+}
+
+$('views').addEventListener('click', async (e) => {
+  if (e.target.closest('[data-new-playlist]')) {
+    const pl = await newPlaylist();
+    if (pl) { setView(pl.id); renderViews(); renderTracks(); }
+    return;
+  }
+  const btn = e.target.closest('[data-view]');
+  if (!btn) return;
+  if (btn.dataset.view === state.view && state.view !== 'all') { openPlaylistSheet(); return; }
+  setView(btn.dataset.view);
+  renderViews();
+  renderTracks();
+  btn.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' });
+});
+
+function openPlaylistSheet() {
+  const pl = currentPlaylist();
+  if (!pl) return;
+  $('pl-sheet-title').textContent = pl.name;
+  $('pl-sheet-sub').textContent = `${pl.track_ids.length} song${pl.track_ids.length === 1 ? '' : 's'}`;
+  openSheet($('playlist-sheet'));
+}
+
+$('pl-rename').addEventListener('click', async () => {
+  const pl = currentPlaylist();
+  closeSheets();
+  const name = prompt('Rename playlist', pl.name)?.trim();
+  if (!name || name === pl.name) return;
+  if (await playlistCall(`/playlists/${pl.id}`, 'PATCH', { name })) await refreshPlaylists().catch(() => {});
+});
+
+$('pl-delete').addEventListener('click', async () => {
+  const pl = currentPlaylist();
+  closeSheets();
+  if (!confirm(`Delete the playlist “${pl.name}”? The songs stay in your library.`)) return;
+  if (await playlistCall(`/playlists/${pl.id}`, 'DELETE')) await refreshPlaylists().catch(() => {});
+});
+
+// "Add to playlist" picker: tap a playlist to add or remove the song.
+function openPickSheet(trackId) {
+  sheetTrack = trackId;
+  $('pick-title').textContent = `Add “${trackById(trackId)?.title}” to…`;
+  renderPickList();
+  openSheet($('pick-sheet'));
+}
+
+function renderPickList() {
+  $('pick-list').innerHTML = state.playlists.map((pl) => {
+    const on = pl.track_ids.includes(sheetTrack);
+    return `<button type="button" class="pick${on ? ' on' : ''}" data-pick="${pl.id}">
+      <span>${esc(pl.name)}</span><span class="check">${on ? ICONS.local : ''}</span></button>`;
+  }).join('') || '<p class="empty-note">No playlists yet.</p>';
+}
+
+$('pick-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-pick]');
+  if (!btn) return;
+  const pl = state.playlists.find((p) => p.id === btn.dataset.pick);
+  const on = pl.track_ids.includes(sheetTrack);
+  const updated = on
+    ? await playlistCall(`/playlists/${pl.id}/tracks/${sheetTrack}`, 'DELETE')
+    : await playlistCall(`/playlists/${pl.id}/tracks`, 'POST', { track_id: sheetTrack });
+  if (!updated) return;
+  setPlaylists(state.playlists.map((p) => (p.id === updated.id ? updated : p)));
+  renderPickList();
+});
+
+$('pick-new').addEventListener('click', async () => {
+  const pl = await newPlaylist();
+  if (!pl) return;
+  const updated = await playlistCall(`/playlists/${pl.id}/tracks`, 'POST', { track_id: sheetTrack });
+  if (updated) setPlaylists(state.playlists.map((p) => (p.id === updated.id ? updated : p)));
+  renderPickList();
+});
+
 /* ---------- track list ---------- */
 
 function renderTracks() {
   const list = visibleTracks();
-  $('empty').hidden = allTracks().length > 0;
+  const pl = currentPlaylist();
+  $('empty').hidden = pl ? list.length > 0 : allTracks().length > 0;
+  $('empty').textContent = pl ? 'This playlist is empty. Use a song’s ⋯ menu to add it here.'
+    : 'No songs yet. Paste a link above to add one.';
   $('list-actions').hidden = list.length === 0;
   $('tracks').innerHTML = list.map((t) => {
     const cover = coverUrl(t);
@@ -412,6 +586,11 @@ $('tracks').addEventListener('click', (e) => {
 
 $('jobs').addEventListener('click', (e) => {
   if (e.target.closest('[data-cancel-queued]')) { cancelQueued(); return; }
+  const retry = e.target.closest('[data-retry]');
+  if (retry) { retryJobs([retry.dataset.retry]); return; }
+  const failedIds = () => state.jobs.filter((j) => j.status === 'error' && !state.dismissed.has(j.id)).map((j) => j.id);
+  if (e.target.closest('[data-retry-all]')) { retryJobs(failedIds()); return; }
+  if (e.target.closest('[data-dismiss-all]')) { failedIds().forEach(dismissJob); return; }
   const btn = e.target.closest('[data-dismiss]');
   if (btn) dismissJob(btn.dataset.dismiss);
 });
@@ -475,51 +654,107 @@ async function resolveSrc(id) {
 
 const releaseSrc = (url) => { if (url?.startsWith('blob:')) URL.revokeObjectURL(url); };
 
-// The next song, loaded ahead of time. iOS only lets a backgrounded page start the
-// next song if it happens immediately inside 'ended'; any await there and the audio dies.
-let prepared = null; // { qi, id, url }
+// The next song, preloaded on the spare player.
+let prepared = null; // { qi, id, url, el }
+let finishing = null; // the previous player, still playing its last half-second
+
+function discardPrepared() {
+  if (!prepared) return;
+  if (prepared.el !== audio) prepared.el.removeAttribute('src');
+  releaseSrc(prepared.url);
+  prepared = null;
+}
 
 async function prepareNext() {
+  if (finishing) return; // the spare is still finishing the last song; retried once it's done
   const i = nextIndex(1, true);
   const id = i >= 0 ? state.queue[i] : null;
   if (prepared?.id === id && prepared?.qi === i) return;
-  releaseSrc(prepared?.url);
-  prepared = null;
-  if (!id) return;
+  discardPrepared();
+  if (!id || state.repeat === 'one') return;
   const url = await resolveSrc(id);
-  // The queue may have changed while we were loading.
-  if (url && state.queue[i] === id && nextIndex(1, true) === i) prepared = { qi: i, id, url };
-  else releaseSrc(url);
+  // The queue may have changed, or a handoff happened, while we were loading.
+  if (!url || prepared || finishing || state.queue[i] !== id || nextIndex(1, true) !== i) { releaseSrc(url); return; }
+  const el = spareOf();
+  el.loop = false;
+  el.src = url;
+  el.load();
+  prepared = { qi: i, id, url, el };
 }
 
 let resumeWhenVisible = false;
 
+function watchPlay(el, label) {
+  el.play().then(() => {
+    resumeWhenVisible = false;
+    logPlay(`${label}: playing`);
+  }).catch((e) => {
+    if (e.name === 'AbortError') return;
+    logPlay(`${label}: play() refused (${e.name})`);
+    resumeWhenVisible = document.hidden; // iOS blocked it in the background
+    renderPlayState();
+  });
+}
+
+function afterTrackChange() {
+  audio.loop = state.repeat === 'one';
+  renderNowPlaying();
+  renderTracks();
+  updateMediaSession(trackById(state.current));
+  prepareNext();
+}
+
+// Start a song on the active player (user picked it, or nothing was preloaded).
 function startTrack(id, url) {
+  discardPrepared();
   releaseSrc(audioUrl);
   audioUrl = url;
   audio.src = url;
   state.current = id;
-  // play() must come before anything else so it runs in the same tick as 'ended'.
-  audio.play().then(() => { resumeWhenVisible = false; }).catch((e) => {
-    if (e.name === 'AbortError') return;
-    resumeWhenVisible = document.hidden; // iOS blocked it in the background
-    renderPlayState();
-  });
-  renderNowPlaying();
-  renderTracks();
-  updateMediaSession(trackById(id));
-  prepareNext();
+  watchPlay(audio, `start ${trackById(id)?.title}`);
+  afterTrackChange();
 }
+
+// Switch to the preloaded song on the spare player. With overlap, the old player is left to
+// finish its last half-second so the audio never goes silent.
+function handoff(overlap) {
+  const p = prepared;
+  prepared = null;
+  const old = audio;
+  const oldUrl = audioUrl;
+  audio = p.el;
+  audioUrl = p.url;
+  state.qi = p.qi;
+  state.current = p.id;
+  watchPlay(audio, `handoff${overlap ? '' : ' (no overlap)'} → ${trackById(p.id)?.title}`);
+
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    old.pause();
+    old.removeAttribute('src');
+    releaseSrc(oldUrl);
+    if (finishing === old) finishing = null;
+    prepareNext();
+  };
+  if (overlap && !old.paused && !old.ended) {
+    finishing = old;
+    old.addEventListener('ended', cleanup, { once: true });
+    setTimeout(cleanup, (HANDOFF_SECONDS + 1.5) * 1000); // in case 'ended' never comes
+  } else {
+    cleanup();
+  }
+  afterTrackChange();
+}
+
+const canHandoff = () => prepared && state.repeat !== 'one'
+  && prepared.qi === nextIndex(1, true) && state.queue[prepared.qi] === prepared.id;
 
 async function playCurrent() {
   const id = state.queue[state.qi];
   if (!trackById(id)) return;
-  if (prepared?.id === id) {
-    const { url } = prepared;
-    prepared = null;
-    startTrack(id, url);
-    return;
-  }
+  if (prepared?.id === id && prepared.qi === state.qi) { handoff(false); return; }
   const url = await resolveSrc(id);
   if (!url) { toast('That song isn’t available offline.'); return; }
   startTrack(id, url);
@@ -527,11 +762,6 @@ async function playCurrent() {
 
 function step(dir, auto = false) {
   if (!state.queue.length) return;
-  if (auto && state.repeat === 'one') {
-    audio.currentTime = 0;
-    audio.play();
-    return;
-  }
   if (dir < 0 && audio.currentTime > 3) {
     audio.currentTime = 0;
     return;
@@ -542,15 +772,17 @@ function step(dir, auto = false) {
   playCurrent();
 }
 
+// Normal path: start the next song a moment before this one ends.
+function onTimeUpdate() {
+  renderProgress();
+  const left = audio.duration - audio.currentTime;
+  if (!audio.paused && left < HANDOFF_SECONDS && canHandoff()) handoff(true);
+}
+
+// Fallback if the early handoff was missed (timeupdate can be sparse in the background).
 function onEnded() {
-  // Fast path: hand over to the preloaded song without awaiting anything.
-  if (state.repeat !== 'one' && prepared && prepared.qi === nextIndex(1, true) && state.queue[prepared.qi] === prepared.id) {
-    const { qi, id, url } = prepared;
-    prepared = null;
-    state.qi = qi;
-    startTrack(id, url);
-    return;
-  }
+  logPlay(`ended: ${trackById(state.current)?.title}`);
+  if (canHandoff()) { handoff(false); return; }
   step(1, true);
 }
 
@@ -620,7 +852,7 @@ async function updateMediaSession(t) {
     }
   }
   if (state.current !== t.id) return;
-  navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist || '', album: 'BerryTunes', artwork });
+  navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist || '', album: 'BerryGoodTunes', artwork });
 }
 
 function updatePositionState() {
@@ -643,17 +875,39 @@ if ('mediaSession' in navigator) {
   }
 }
 
-audio.addEventListener('play', renderPlayState);
-audio.addEventListener('pause', renderPlayState);
-audio.addEventListener('timeupdate', renderProgress);
-audio.addEventListener('loadedmetadata', () => { renderProgress(); updatePositionState(); });
-audio.addEventListener('seeked', updatePositionState);
-audio.addEventListener('ended', onEnded);
-audio.addEventListener('error', () => {
-  if (!audio.getAttribute('src')) return;
-  toast('Couldn’t play that song.');
-  renderPlayState();
-});
+// Both players share the handlers; events from the one that isn't active are ignored
+// (except errors on a preloaded song, which just drop the preload).
+const onActive = (fn) => (e) => { if (e.target === audio && e.target.src !== SILENT) fn(e); };
+for (const el of players) {
+  el.addEventListener('play', onActive(renderPlayState));
+  el.addEventListener('pause', onActive(renderPlayState));
+  el.addEventListener('timeupdate', onActive(onTimeUpdate));
+  el.addEventListener('loadedmetadata', onActive(() => { renderProgress(); updatePositionState(); }));
+  el.addEventListener('seeked', onActive(updatePositionState));
+  el.addEventListener('ended', onActive(onEnded));
+  for (const type of ['stalled', 'waiting']) el.addEventListener(type, onActive(() => logPlay(type)));
+  el.addEventListener('error', (e) => {
+    if (!el.getAttribute('src') || el.src === SILENT) return;
+    if (e.target !== audio) { logPlay('preload failed'); discardPrepared(); return; }
+    logPlay(`error ${el.error?.code}`);
+    toast('Couldn’t play that song.');
+    renderPlayState();
+  });
+}
+
+// iOS only lets a player start without a tap once it has been played from a tap. Play a
+// moment of silence on both on the first touch so either can take over in the background.
+const SILENT = 'data:audio/wav;base64,UklGRmQGAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+const unlocked = new WeakSet();
+document.addEventListener('click', () => {
+  for (const el of players) {
+    if (unlocked.has(el)) continue;
+    unlocked.add(el);
+    if (el.getAttribute('src')) continue;
+    el.src = SILENT;
+    el.play().then(() => { if (el.src === SILENT) { el.pause(); el.removeAttribute('src'); } }).catch(() => {});
+  }
+}, { capture: true });
 
 $('mini-play').addEventListener('click', togglePlay);
 $('play').addEventListener('click', togglePlay);
@@ -677,6 +931,7 @@ $('shuffle').addEventListener('click', () => {
 $('repeat').addEventListener('click', () => {
   state.repeat = { off: 'all', all: 'one', one: 'off' }[state.repeat];
   prefs.set('repeat', state.repeat);
+  audio.loop = state.repeat === 'one';
   renderModes();
   prepareNext();
 });
@@ -716,6 +971,9 @@ function closeSheets() {
   $('sheet-backdrop').hidden = true;
   $('track-sheet').hidden = true;
   $('settings-sheet').hidden = true;
+  $('log-sheet').hidden = true;
+  $('playlist-sheet').hidden = true;
+  $('pick-sheet').hidden = true;
 }
 
 function openTrackSheet(id) {
@@ -727,6 +985,10 @@ function openTrackSheet(id) {
   $('sheet-sub').textContent = [t.artist, where, t.size && fmtBytes(t.size)].filter(Boolean).join(' · ');
   $('sheet-save').hidden = state.local.has(id) || !state.online || !state.server.has(id);
   $('sheet-source').hidden = !t.source_url;
+  $('sheet-add-pl').hidden = !state.server.has(id);
+  const pl = currentPlaylist();
+  $('sheet-remove-pl').hidden = !pl;
+  if (pl) $('sheet-remove-pl').textContent = `Remove from “${pl.name}”`;
   openSheet($('track-sheet'));
 }
 
@@ -737,10 +999,19 @@ $('sheet-source').addEventListener('click', () => {
   if (t?.source_url) window.open(t.source_url, '_blank', 'noopener');
 });
 $('sheet-delete').addEventListener('click', () => { closeSheets(); deleteTrack(sheetTrack); });
+$('sheet-add-pl').addEventListener('click', () => { closeSheets(); openPickSheet(sheetTrack); });
+$('sheet-remove-pl').addEventListener('click', async () => {
+  closeSheets();
+  const pl = currentPlaylist();
+  const updated = pl && await playlistCall(`/playlists/${pl.id}/tracks/${sheetTrack}`, 'DELETE');
+  if (updated) setPlaylists(state.playlists.map((p) => (p.id === updated.id ? updated : p)));
+});
 
 async function openSettings() {
   $('autosave').checked = state.autosave;
   $('ytdlp').textContent = state.ytdlp || '–';
+  $('jsruntime').textContent = !state.online ? '–' : state.jsRuntime ? `${state.jsRuntime} ✓` : 'Missing!';
+  $('jsruntime-row').classList.toggle('warn', state.online && !state.jsRuntime);
   $('storage').textContent = '…';
   openSheet($('settings-sheet'));
   let used = 0;
@@ -759,6 +1030,16 @@ $('save-all').addEventListener('click', () => {
   if (!state.online) { toast('Your PC is offline.'); return; }
   saveMissing();
 });
+$('open-log').addEventListener('click', () => {
+  closeSheets();
+  $('log-text').textContent = playLog.length ? playLog.slice().reverse().join('\n') : 'Nothing logged yet.';
+  openSheet($('log-sheet'));
+});
+$('log-clear').addEventListener('click', () => {
+  playLog.length = 0;
+  prefs.set('playlog', playLog);
+  $('log-text').textContent = 'Nothing logged yet.';
+});
 $('sheet-backdrop').addEventListener('click', closeSheets);
 document.querySelectorAll('.sheet-cancel').forEach((b) => b.addEventListener('click', closeSheets));
 $('status').addEventListener('click', () => {
@@ -776,6 +1057,7 @@ async function sync() {
     if (!(await checkHealth())) return;
     await flushPending();
     await refreshTracks();
+    await refreshPlaylists();
     await pollJobs();
     if (state.autosave) saveMissing();
   } catch {
@@ -787,9 +1069,11 @@ async function sync() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) return;
+  if (document.hidden) { logPlay('app hidden'); return; }
+  logPlay(`app opened (player ${audio.paused ? 'paused' : 'playing'})`);
   if (resumeWhenVisible && state.current && audio.paused) {
     resumeWhenVisible = false;
+    logPlay('resuming after background block');
     audio.play().catch(() => {});
   }
   sync();
@@ -810,6 +1094,7 @@ async function boot() {
   renderPlayState();
 
   try { await loadLocal(); } catch { toast('Couldn’t open saved songs on this device.'); }
+  renderViews();
   renderTracks();
   renderJobs();
 

@@ -1,4 +1,4 @@
-# BerryGoodBot: BerryTunes
+# BerryGoodBot: BerryGoodTunes
 
 A personal music app. Paste a video link and your Windows PC pulls out the audio. The song then lands in a music player on your iPhone that works offline.
 
@@ -36,27 +36,35 @@ iPhone (home-screen app)  ──Tailscale──▶  Windows PC
 
 1. Install **Tailscale** from the App Store and sign in with the **same account** as on the PC.
 2. In **Safari**, open your `https://….ts.net` address.
-3. Tap **Share → Add to Home Screen**. From now on, always open BerryTunes from the home-screen icon. Safari and the home-screen app keep separate libraries on the phone.
+3. Tap **Share → Add to Home Screen**. From now on, always open BerryGoodTunes from the home-screen icon. Safari and the home-screen app keep separate libraries on the phone.
 
-### 3. "Add to BerryTunes" in the Share sheet (recommended)
+### 3. "Add to BerryGoodTunes" in the Share sheet (recommended)
 
 iOS doesn't let home-screen web apps appear in the Share sheet, so an iOS Shortcut sends the link to your PC instead:
 
-1. Open **Shortcuts → +**, and name it **Add to BerryTunes**.
+1. Open **Shortcuts → +**, and name it **Add to BerryGoodTunes**.
 2. Tap the **ⓘ** (details) button and turn on **Show in Share Sheet**. Set it to receive **URLs** and **Text**.
 3. Add the action **Get Contents of URL**:
    - URL: `https://your-pc.tail1234.ts.net/api/jobs`
    - Method: **POST**
    - Request Body: **JSON**, with one field: key `url`, type Text, value **Shortcut Input**
-4. Add the action **Show Notification** with the text `Sent to BerryTunes`.
+4. Add the action **Show Notification** with the text `Sent to BerryGoodTunes`.
 
-Now in YouTube (or any app), tap **Share → Add to BerryTunes**. Open BerryTunes a minute later and the song will be there and saved to the phone. The Shortcut needs the PC on. If it's off, paste the link into the app instead, and the app will hold it until the PC is back.
+Now in YouTube (or any app), tap **Share → Add to BerryGoodTunes**. Open BerryGoodTunes a minute later and the song will be there and saved to the phone. The Shortcut needs the PC on. If it's off, paste the link into the app instead, and the app will hold it until the PC is back.
 
 ## Using it
 
 - **Add:** paste a link and tap **Add**. Progress shows at the top.
 - **Whole playlists:** share or paste a **playlist** link (on YouTube: open the playlist, then Share). Every song in it gets queued. Songs already in your library are skipped, and deleted or private videos show an error you can dismiss. Downloads run one at a time with a short pause between them so YouTube doesn't flag a burst of requests. A 50-song playlist takes a few minutes. **Cancel** on the "songs waiting" row stops the rest.
   - A link to a *video that's playing inside a playlist* (`watch?v=…&list=…`) adds just that one video.
+  - The songs go into your library like any others; put them into your own playlists if you want them grouped. Adding the same YouTube playlist again later only fetches songs you don't already have.
+- **Failed downloads:** when two or more fail, a **Retry all** row appears above them. Each failed song also has its own **Retry**, and retried songs don't create duplicates.
+- **Playlists:** the row of tabs under the search box switches between **All songs** and your playlists. Use them to keep podcasts and learning content apart from music.
+  - **+ New** creates a playlist.
+  - A song's **⋯** menu → **Add to playlist…** adds or removes it (tap a playlist to toggle it). When viewing a playlist, the menu also offers **Remove from "…"**.
+  - Tap the **selected** tab again to rename or delete the playlist. Deleting a playlist never deletes its songs.
+  - Play and Shuffle play the playlist you're viewing.
+  - Playlists are stored on your PC, so they sync to every device. Changing them needs the PC online; viewing and playing works offline.
 - **Play:** tap a song. It plays through the list, and shuffle and repeat are in the full player (tap the mini player). Lock-screen controls and artwork work.
 - **Song status icons:** ✅ saved on this device (plays offline) · ☁️ on your PC only (plays only while the PC is reachable) · ⬇️ saving now.
 - **⋯ menu:** save to this device, open the original video, or delete. Delete removes the song from the PC and this phone.
@@ -65,11 +73,12 @@ Now in YouTube (or any app), tap **Share → Add to BerryTunes**. Open BerryTune
 
 ## If YouTube downloads start failing
 
-1. **Restart the server** (log out and back in, or reboot). Every start updates yt-dlp, which fixes most breakages.
-2. **Still failing with "Sign in to confirm you're not a bot"?** Give it cookies from a logged-in YouTube account:
+1. **"HTTP Error 403: Forbidden" on some songs** means YouTube refused that download, usually briefly. Failed songs are retried automatically (up to 3 tries), and any that still fail get a **Retry** button. If most downloads get 403, open **Settings** in the app and check **YouTube helper (Deno)**. If it says **Missing**, re-run `setup.cmd` and then `restart.cmd`.
+2. **Restart the server** (`restart.cmd`). Every start updates yt-dlp, which fixes most breakages.
+3. **Still failing with "Sign in to confirm you're not a bot"**, or constant 403s? Give it cookies from a logged-in YouTube account:
    - Use a **secondary Google account, not your main one.** Google occasionally flags accounts used this way.
    - Log in to YouTube with it in your browser, export its cookies with the "Get cookies.txt LOCALLY" extension, and save the file as `server\cookies.txt`. Then restart the server.
-3. Errors from each download show in the app, and the full server log is at `server\logs\server.log`.
+4. Errors from each download show in the app. The full server log, including yt-dlp's warnings, is at `server\logs\server.log`.
 
 ## Where things live
 
