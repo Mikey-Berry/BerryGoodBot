@@ -89,6 +89,7 @@ main { padding: 4px 16px 0; }
 .job.error small { color: var(--bad); white-space: normal; }
 .job .bar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width .3s; }
 .job button { color: var(--muted); padding: 6px; }
+.job .text-btn { color: var(--accent); font-weight: 600; font-size: 14px; padding: 6px 4px; }
 
 /* Track list */
 .tracks { list-style: none; margin: 0; padding: 0; }

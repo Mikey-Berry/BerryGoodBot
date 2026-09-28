@@ -239,27 +239,58 @@ function dismissJob(id) {
 }
 
 function renderJobs() {
-  const recent = Date.now() / 1000 - 8;
+  const now = Date.now() / 1000;
+  // Playlist summaries stay up a little longer so there's time to read them.
+  const showDone = (j) => j.finished_at >= now - (j.kind === 'playlist' ? 20 : 8);
   const items = state.pendingAdds.map((url) => `
     <li class="job"><div class="label"><strong>${esc(url)}</strong><small>Waiting for your PC to come online</small></div></li>`);
-  for (const j of state.jobs) {
-    if (state.dismissed.has(j.id)) continue;
-    if (j.status === 'done' && j.finished_at < recent) continue;
-    const title = esc(j.title || j.url);
-    const dismiss = `<button type="button" data-dismiss="${j.id}" aria-label="Dismiss">${ICONS.close}</button>`;
+  const dismiss = (j) => `<button type="button" data-dismiss="${j.id}" aria-label="Dismiss">${ICONS.close}</button>`;
+  const row = (j, label, extra = '') => `<li class="job${j.status === 'error' ? ' error' : ''}">
+    <div class="label"><strong>${esc(j.title || j.url)}</strong><small>${esc(label)}</small></div>${extra}</li>`;
+
+  // Oldest first, so the song downloading now sits above the ones waiting behind it.
+  const jobs = state.jobs.filter((j) => !state.dismissed.has(j.id)).reverse();
+  for (const j of jobs) {
+    if (j.status === 'downloading' || j.status === 'processing') {
+      const label = j.kind === 'playlist' ? 'Reading playlist…'
+        : j.status === 'processing' ? 'Converting…' : `Downloading… ${Math.round(j.progress * 100)}%`;
+      items.push(row(j, label, `<span class="bar" style="width:${Math.round(j.progress * 100)}%"></span>`));
+    }
+  }
+  const queued = jobs.filter((j) => j.status === 'queued');
+  if (queued.length === 1) {
+    items.push(row(queued[0], 'Queued'));
+  } else if (queued.length > 1) {
+    items.push(`<li class="job"><div class="label"><strong>${queued.length} songs waiting</strong>
+      <small>Next: ${esc(queued[0].title || queued[0].url)}</small></div>
+      <button type="button" class="text-btn" data-cancel-queued>Cancel</button></li>`);
+  }
+  for (const j of jobs) {
     if (j.status === 'error') {
-      items.push(`<li class="job error"><div class="label"><strong>${title}</strong><small>${esc(j.error)}</small></div>${dismiss}</li>`);
-    } else if (j.status === 'done') {
-      items.push(`<li class="job"><div class="label"><strong>${title}</strong><small>${j.duplicate ? 'Already in your library' : 'Added to your library'}</small></div>${dismiss}</li>`);
-    } else {
-      const label = { queued: 'Queued', downloading: `Downloading… ${Math.round(j.progress * 100)}%`, processing: 'Converting…' }[j.status];
-      items.push(`<li class="job"><div class="label"><strong>${title}</strong><small>${label}</small></div>
-        <span class="bar" style="width:${Math.round(j.progress * 100)}%"></span></li>`);
+      items.push(row(j, j.error, dismiss(j)));
+    } else if (j.status === 'done' && showDone(j)) {
+      let label = j.duplicate ? 'Already in your library' : 'Added to your library';
+      if (j.playlist) {
+        const { added, already } = j.playlist;
+        label = `Playlist: ${added} song${added === 1 ? '' : 's'} queued` + (already ? ` · ${already} already in your library` : '');
+      }
+      items.push(row(j, label, dismiss(j)));
     }
   }
   $('jobs').innerHTML = items.join('');
   clearTimeout(renderJobs.timer);
-  if (state.jobs.some((j) => j.status === 'done' && j.finished_at >= recent)) renderJobs.timer = setTimeout(renderJobs, 2000);
+  if (state.jobs.some((j) => j.status === 'done' && showDone(j))) renderJobs.timer = setTimeout(renderJobs, 2000);
+}
+
+async function cancelQueued() {
+  const count = state.jobs.filter((j) => j.status === 'queued').length;
+  if (!confirm(`Cancel ${count} waiting songs? The one downloading now will finish.`)) return;
+  try {
+    await api('/jobs/queued', { method: 'DELETE' });
+  } catch {
+    toast('Couldn’t reach your PC.');
+  }
+  pollJobs();
 }
 
 /* ---------- saving songs to this device ---------- */
@@ -379,6 +410,7 @@ $('tracks').addEventListener('click', (e) => {
 });
 
 $('jobs').addEventListener('click', (e) => {
+  if (e.target.closest('[data-cancel-queued]')) { cancelQueued(); return; }
   const btn = e.target.closest('[data-dismiss]');
   if (btn) dismissJob(btn.dataset.dismiss);
 });
