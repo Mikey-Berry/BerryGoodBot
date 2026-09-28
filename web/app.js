@@ -383,6 +383,7 @@ async function deleteTrack(id) {
 function renderTracks() {
   const list = visibleTracks();
   $('empty').hidden = allTracks().length > 0;
+  $('list-actions').hidden = list.length === 0;
   $('tracks').innerHTML = list.map((t) => {
     const cover = coverUrl(t);
     const [cls, icon, label] = state.local.has(t.id) ? ['local', ICONS.local, 'Saved on this device']
@@ -446,32 +447,82 @@ function playFromList(id) {
   playCurrent();
 }
 
-async function playCurrent() {
-  const id = state.queue[state.qi];
-  const t = trackById(id);
-  if (!t) return;
-  let src = null;
+// Where the queue goes next from state.qi, or -1 at the end. Skips songs that can't play right now.
+function nextIndex(dir, auto) {
+  const n = state.queue.length;
+  let i = state.qi;
+  for (let tries = 0; tries < n; tries++) {
+    i += dir;
+    if (i >= n) {
+      if (auto && state.repeat === 'off') return -1;
+      i = 0;
+    }
+    if (i < 0) i = n - 1;
+    if (isPlayable(state.queue[i])) return i;
+  }
+  return -1;
+}
+
+// Resolve a playable URL for a song: the saved copy on this device, else the PC.
+async function resolveSrc(id) {
   if (state.local.has(id)) {
     const blob = await db.get('files', `${id}:audio`);
-    if (blob) src = URL.createObjectURL(blob);
-    else await removeLocal(id); // iOS evicted it; fall back to the PC copy
+    if (blob) return URL.createObjectURL(blob);
+    await removeLocal(id); // iOS evicted it; fall back to the PC copy
   }
-  if (!src) {
-    if (!state.online || !state.server.has(id)) { toast('That song isn’t available offline.'); return; }
-    src = `/api/tracks/${id}/audio`;
-  }
-  if (audioUrl?.startsWith('blob:')) URL.revokeObjectURL(audioUrl);
-  audioUrl = src;
-  audio.src = src;
+  return state.online && state.server.has(id) ? `/api/tracks/${id}/audio` : null;
+}
+
+const releaseSrc = (url) => { if (url?.startsWith('blob:')) URL.revokeObjectURL(url); };
+
+// The next song, loaded ahead of time. iOS only lets a backgrounded page start the
+// next song if it happens immediately inside 'ended'; any await there and the audio dies.
+let prepared = null; // { qi, id, url }
+
+async function prepareNext() {
+  const i = nextIndex(1, true);
+  const id = i >= 0 ? state.queue[i] : null;
+  if (prepared?.id === id && prepared?.qi === i) return;
+  releaseSrc(prepared?.url);
+  prepared = null;
+  if (!id) return;
+  const url = await resolveSrc(id);
+  // The queue may have changed while we were loading.
+  if (url && state.queue[i] === id && nextIndex(1, true) === i) prepared = { qi: i, id, url };
+  else releaseSrc(url);
+}
+
+let resumeWhenVisible = false;
+
+function startTrack(id, url) {
+  releaseSrc(audioUrl);
+  audioUrl = url;
+  audio.src = url;
   state.current = id;
+  // play() must come before anything else so it runs in the same tick as 'ended'.
+  audio.play().then(() => { resumeWhenVisible = false; }).catch((e) => {
+    if (e.name === 'AbortError') return;
+    resumeWhenVisible = document.hidden; // iOS blocked it in the background
+    renderPlayState();
+  });
   renderNowPlaying();
   renderTracks();
-  updateMediaSession(t);
-  try {
-    await audio.play();
-  } catch (e) {
-    if (e.name !== 'AbortError') renderPlayState(); // autoplay blocked: user taps play
+  updateMediaSession(trackById(id));
+  prepareNext();
+}
+
+async function playCurrent() {
+  const id = state.queue[state.qi];
+  if (!trackById(id)) return;
+  if (prepared?.id === id) {
+    const { url } = prepared;
+    prepared = null;
+    startTrack(id, url);
+    return;
   }
+  const url = await resolveSrc(id);
+  if (!url) { toast('That song isn’t available offline.'); return; }
+  startTrack(id, url);
 }
 
 function step(dir, auto = false) {
@@ -485,17 +536,22 @@ function step(dir, auto = false) {
     audio.currentTime = 0;
     return;
   }
-  const n = state.queue.length;
-  for (let tries = 0; tries < n; tries++) {
-    let i = state.qi + dir;
-    if (i >= n) {
-      if (auto && state.repeat === 'off') { renderPlayState(); return; }
-      i = 0;
-    }
-    if (i < 0) i = n - 1;
-    state.qi = i;
-    if (isPlayable(state.queue[i])) { playCurrent(); return; }
+  const i = nextIndex(dir, auto);
+  if (i < 0) { renderPlayState(); return; }
+  state.qi = i;
+  playCurrent();
+}
+
+function onEnded() {
+  // Fast path: hand over to the preloaded song without awaiting anything.
+  if (state.repeat !== 'one' && prepared && prepared.qi === nextIndex(1, true) && state.queue[prepared.qi] === prepared.id) {
+    const { qi, id, url } = prepared;
+    prepared = null;
+    state.qi = qi;
+    startTrack(id, url);
+    return;
   }
+  step(1, true);
 }
 
 function togglePlay() {
@@ -592,7 +648,7 @@ audio.addEventListener('pause', renderPlayState);
 audio.addEventListener('timeupdate', renderProgress);
 audio.addEventListener('loadedmetadata', () => { renderProgress(); updatePositionState(); });
 audio.addEventListener('seeked', updatePositionState);
-audio.addEventListener('ended', () => step(1, true));
+audio.addEventListener('ended', onEnded);
 audio.addEventListener('error', () => {
   if (!audio.getAttribute('src')) return;
   toast('Couldn’t play that song.');
@@ -615,13 +671,28 @@ $('shuffle').addEventListener('click', () => {
     state.qi = Math.max(0, state.queue.indexOf(state.current));
   }
   renderModes();
+  prepareNext();
 });
 
 $('repeat').addEventListener('click', () => {
   state.repeat = { off: 'all', all: 'one', one: 'off' }[state.repeat];
   prefs.set('repeat', state.repeat);
   renderModes();
+  prepareNext();
 });
+
+// "Play" / "Shuffle" above the list: play everything currently shown (respects the search box).
+function playAll(shuffle) {
+  state.shuffle = shuffle;
+  prefs.set('shuffle', shuffle);
+  renderModes();
+  const playable = visibleTracks().filter((t) => isPlayable(t.id));
+  if (!playable.length) { toast('No songs available to play right now.'); return; }
+  const first = shuffle ? playable[Math.floor(Math.random() * playable.length)] : playable[0];
+  playFromList(first.id);
+}
+$('play-all').addEventListener('click', () => playAll(false));
+$('shuffle-all').addEventListener('click', () => playAll(true));
 
 $('seek').addEventListener('input', (e) => {
   seeking = true;
@@ -715,7 +786,14 @@ async function sync() {
   }
 }
 
-document.addEventListener('visibilitychange', () => { if (!document.hidden) sync(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (resumeWhenVisible && state.current && audio.paused) {
+    resumeWhenVisible = false;
+    audio.play().catch(() => {});
+  }
+  sync();
+});
 window.addEventListener('online', sync);
 setInterval(() => { if (!document.hidden) sync(); }, 30000);
 
@@ -726,6 +804,8 @@ async function boot() {
   $('next').innerHTML = ICONS.next;
   $('mini-next').innerHTML = ICONS.next;
   $('shuffle').innerHTML = ICONS.shuffle;
+  $('play-all').insertAdjacentHTML('afterbegin', ICONS.play);
+  $('shuffle-all').insertAdjacentHTML('afterbegin', ICONS.shuffle);
   renderModes();
   renderPlayState();
 
