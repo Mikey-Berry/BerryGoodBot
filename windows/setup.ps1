@@ -6,7 +6,13 @@ $server = Join-Path (Split-Path -Parent $PSScriptRoot) 'server'
 function Refresh-Path {
     $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
                 [Environment]::GetEnvironmentVariable('Path', 'User')
+    # Tailscale's installer doesn't always reach already-open windows; add its folder directly.
+    $tailscaleDir = Join-Path $env:ProgramFiles 'Tailscale'
+    if (Test-Path $tailscaleDir) { $env:Path += ";$tailscaleDir" }
 }
+
+# Pick up anything installed since this window was opened.
+Refresh-Path
 
 function Test-Tool($exe, $versionArg) {
     $ErrorActionPreference = 'Continue'
