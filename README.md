@@ -64,6 +64,11 @@ Now in YouTube (or any app), tap **Share → Add to BerryGoodTunes**. Open Berry
   - **Links from the Share-sheet Shortcut are sorted automatically:** anything YouTube labels as Music goes to Music, and anything else 20 minutes or longer goes to Podcasts. The download banner says where each one went.
   - **Wrong side?** Use the song's **⋯** menu → **Move to Podcasts** / **Move to Music**. Moving removes it from the old side's playlists.
   - Optional: make a second Shortcut, e.g. **Add to Podcasts**, identical to the first but with a second JSON field: key `section`, value `podcasts`. It always sends to Podcasts. Use `music` for the reverse.
+- **Resume where you left off:** podcasts, and anything 20 minutes or longer (like a long mix in Music), remember where you stopped and pick up a few seconds before that spot. Regular songs always start from the beginning.
+  - The list shows **"23 min left"** with a progress bar, or **Played** once you've finished (stopping in the last 30 seconds counts).
+  - Playing something marked Played starts it from the beginning.
+  - The **⋯** menu has **Mark as played / Mark as unplayed**. Unplayed also clears a half-way position.
+  - Positions sync through your PC, so you can pause on one device and continue on another.
 - **Playlists:** the row of tabs under the search box switches between **All** and that side's playlists. Playlists belong to the side they were created on.
   - **+ New** creates a playlist.
   - A song's **⋯** menu → **Add to playlist…** adds or removes it (tap a playlist to toggle it). When viewing a playlist, the menu also offers **Remove from "…"**.

@@ -609,11 +609,13 @@ function renderTracks() {
     const [cls, icon, label] = state.local.has(t.id) ? ['local', ICONS.local, 'Saved on this device']
       : state.saving.has(t.id) ? ['saving', ICONS.saving, 'Saving to this device']
       : ['', ICONS.cloud, 'On your PC only'];
-    const sub = [t.artist, fmtTime(t.duration)].filter(Boolean).join(' · ');
+    const info = progressInfo(t);
+    const sub = [t.artist, info ? info.text : fmtTime(t.duration)].filter(Boolean).join(' · ');
+    const bar = info?.frac != null && !info.played ? `<span class="resume-bar"><span style="width:${Math.round(info.frac * 100)}%"></span></span>` : '';
     return `<li class="track${t.id === state.current ? ' playing' : ''}${isPlayable(t.id) ? '' : ' unavailable'}" data-id="${t.id}">
       <button class="main" type="button">
         <span class="cover"><img alt="" ${cover ? `src="${esc(cover)}"` : ''} onerror="this.removeAttribute('src')"></span>
-        <span class="meta"><strong>${esc(t.title)}</strong><small>${esc(sub)}</small></span>
+        <span class="meta${info?.played ? ' played' : ''}"><strong>${esc(t.title)}</strong><small>${esc(sub)}</small>${bar}</span>
       </button>
       <span class="state ${cls}" title="${label}" aria-label="${label}">${icon}</span>
       <button class="icon-btn more" type="button" aria-label="More">${ICONS.more}</button>
@@ -653,6 +655,85 @@ $('add-form').addEventListener('submit', async (e) => {
   input.value = '';
   input.blur();
 });
+
+/* ---------- resume where you left off (podcasts and long items) ---------- */
+
+const RESUME_MIN_SECONDS = 20 * 60; // music this long (e.g. a mix) resumes too
+// Stopping in the last 30 s (or last 10% of a short item) counts as played.
+const finishedWithin = (duration) => Math.min(30, duration * 0.1);
+const REWIND_ON_RESUME = 5;         // pick up a few seconds early for context
+
+const progress = prefs.get('progress', {}); // track id -> { pos, played, at }
+const isResumable = (t, duration) => !!t
+  && (sectionOf(t) === 'podcasts' || (t.duration || duration || 0) >= RESUME_MIN_SECONDS);
+
+let lastPush = 0;
+function persistProgress(urgent) {
+  prefs.set('progress', progress);
+  if (urgent || Date.now() - lastPush > 15000) pushProgress();
+}
+
+// Send this device's positions to the PC and take any newer ones from other devices.
+async function pushProgress() {
+  if (!state.online) return;
+  lastPush = Date.now();
+  try {
+    const res = await api('/progress', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries: progress }),
+    });
+    let changed = false;
+    for (const [id, entry] of Object.entries(await res.json())) {
+      if (!progress[id] || entry.at > progress[id].at) { progress[id] = entry; changed = true; }
+    }
+    if (changed) { prefs.set('progress', progress); renderTracks(); }
+  } catch { /* offline; the next sync sends it */ }
+}
+
+// Save where a player is in a resumable item. Only once the saved spot has been applied to
+// that player, so the 0:00 it sits at while loading never overwrites real progress.
+function recordProgress(id, el, urgent = false) {
+  const t = trackById(id);
+  if (!id || el.dataset.resumeFor !== id || !isResumable(t, el.duration)) return;
+  if (!Number.isFinite(el.duration) || !el.duration) return;
+  const played = el.ended || el.duration - el.currentTime < finishedWithin(el.duration);
+  const before = progressInfo(t)?.text;
+  progress[id] = { pos: played ? 0 : Math.floor(el.currentTime), played, at: Date.now() };
+  persistProgress(urgent);
+  if (urgent || progressInfo(t)?.text !== before) renderTracks();
+}
+
+// Once a player has loaded an item, jump to where it was left off (if it's resumable and unfinished).
+function applyResume(el, id) {
+  delete el.dataset.resumeFor;
+  const url = el.src;
+  const go = () => {
+    if (el.src !== url) return; // the player moved on to something else meanwhile
+    const p = progress[id];
+    const d = el.duration;
+    if (p && !p.played && p.pos > 10 && isResumable(trackById(id), d) && p.pos < d - finishedWithin(d)) {
+      el.currentTime = Math.max(0, p.pos - REWIND_ON_RESUME);
+      logPlay(`resume ${trackById(id)?.title} at ${fmtTime(el.currentTime)}`);
+    }
+    el.dataset.resumeFor = id;
+  };
+  if (el.readyState >= 1) go(); else el.addEventListener('loadedmetadata', go, { once: true });
+}
+
+function progressInfo(t) {
+  const p = progress[t.id];
+  if (!p || !isResumable(t)) return null;
+  if (p.played) return { text: 'Played', frac: 1, played: true };
+  if (p.pos <= 10) return null;
+  if (!t.duration) return { text: `Stopped at ${fmtTime(p.pos)}`, frac: null };
+  return { text: `${Math.max(1, Math.round((t.duration - p.pos) / 60))} min left`, frac: p.pos / t.duration };
+}
+
+let lastRecord = 0;
+function recordWhilePlaying() {
+  if (Date.now() - lastRecord < 5000) return;
+  lastRecord = Date.now();
+  recordProgress(state.current, audio);
+}
 
 /* ---------- playback ---------- */
 
@@ -725,6 +806,7 @@ async function prepareNext() {
   el.loop = false;
   el.src = url;
   el.load();
+  applyResume(el, id);
   prepared = { qi: i, id, url, el };
 }
 
@@ -752,10 +834,12 @@ function afterTrackChange() {
 
 // Start a song on the active player (user picked it, or nothing was preloaded).
 function startTrack(id, url) {
+  recordProgress(state.current, audio, true);
   discardPrepared();
   releaseSrc(audioUrl);
   audioUrl = url;
   audio.src = url;
+  applyResume(audio, id);
   state.current = id;
   watchPlay(audio, `start ${trackById(id)?.title}`);
   afterTrackChange();
@@ -767,6 +851,7 @@ function handoff(overlap) {
   const p = prepared;
   prepared = null;
   const old = audio;
+  recordProgress(state.current, old, true);
   const oldUrl = audioUrl;
   audio = p.el;
   audioUrl = p.url;
@@ -821,12 +906,14 @@ function step(dir, auto = false) {
 // Normal path: start the next song a moment before this one ends.
 function onTimeUpdate() {
   renderProgress();
+  recordWhilePlaying();
   const left = audio.duration - audio.currentTime;
   if (!audio.paused && left < HANDOFF_SECONDS && canHandoff()) handoff(true);
 }
 
 // Fallback if the early handoff was missed (timeupdate can be sparse in the background).
 function onEnded() {
+  recordProgress(state.current, audio, true);
   logPlay(`ended: ${trackById(state.current)?.title}`);
   if (canHandoff()) { handoff(false); return; }
   step(1, true);
@@ -926,10 +1013,10 @@ if ('mediaSession' in navigator) {
 const onActive = (fn) => (e) => { if (e.target === audio && e.target.src !== SILENT) fn(e); };
 for (const el of players) {
   el.addEventListener('play', onActive(renderPlayState));
-  el.addEventListener('pause', onActive(renderPlayState));
+  el.addEventListener('pause', onActive(() => { renderPlayState(); recordProgress(state.current, audio, true); }));
   el.addEventListener('timeupdate', onActive(onTimeUpdate));
   el.addEventListener('loadedmetadata', onActive(() => { renderProgress(); updatePositionState(); }));
-  el.addEventListener('seeked', onActive(updatePositionState));
+  el.addEventListener('seeked', onActive(() => { updatePositionState(); recordProgress(state.current, audio, true); }));
   el.addEventListener('ended', onActive(onEnded));
   for (const type of ['stalled', 'waiting']) el.addEventListener(type, onActive(() => logPlay(type)));
   el.addEventListener('error', (e) => {
@@ -1036,6 +1123,8 @@ function openTrackSheet(id) {
   $('sheet-remove-pl').hidden = !pl;
   if (pl) $('sheet-remove-pl').textContent = `Remove from “${pl.name}”`;
   $('sheet-move').hidden = !state.server.has(id);
+  $('sheet-played').hidden = !isResumable(t);
+  $('sheet-played').textContent = progress[id]?.played || progress[id]?.pos > 10 ? 'Mark as unplayed' : 'Mark as played';
   $('sheet-move').textContent = `Move to ${SECTION_NAMES[otherSection(sectionOf(t))]}`;
   openSheet($('track-sheet'));
 }
@@ -1048,6 +1137,14 @@ $('sheet-source').addEventListener('click', () => {
 });
 $('sheet-delete').addEventListener('click', () => { closeSheets(); deleteTrack(sheetTrack); });
 $('sheet-add-pl').addEventListener('click', () => { closeSheets(); openPickSheet(sheetTrack); });
+$('sheet-played').addEventListener('click', () => {
+  closeSheets();
+  const p = progress[sheetTrack];
+  const played = !(p?.played || p?.pos > 10); // "unplayed" also clears a half-way position
+  progress[sheetTrack] = { pos: 0, played, at: Date.now() };
+  persistProgress(true);
+  renderTracks();
+});
 $('sheet-move').addEventListener('click', async () => {
   closeSheets();
   const id = sheetTrack;
@@ -1123,6 +1220,7 @@ async function sync() {
     await flushPending();
     await refreshTracks();
     await refreshPlaylists();
+    await pushProgress();
     await pollJobs();
     if (state.autosave) saveMissing();
   } catch {
@@ -1134,7 +1232,7 @@ async function sync() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { logPlay('app hidden'); return; }
+  if (document.hidden) { logPlay('app hidden'); recordProgress(state.current, audio, true); return; }
   logPlay(`app opened (player ${audio.paused ? 'paused' : 'playing'})`);
   if (resumeWhenVisible && state.current && audio.paused) {
     resumeWhenVisible = false;

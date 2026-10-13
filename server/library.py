@@ -1,4 +1,4 @@
-"""On-disk music library: audio + cover files, a tracks.json index and playlists.json."""
+"""On-disk music library: audio + cover files, tracks.json, playlists.json and progress.json."""
 
 from __future__ import annotations
 
@@ -16,9 +16,14 @@ class Library:
         self.root.mkdir(parents=True, exist_ok=True)
         self.index_path = root / "tracks.json"
         self.playlists_path = root / "playlists.json"
+        self.progress_path = root / "progress.json"
         self._lock = threading.RLock()
         self._tracks: dict[str, dict] = {}
         self._playlists: dict[str, dict] = {}
+        # Listening position for podcasts and long items: track_id -> {"pos": seconds, "played": bool, "at": ms}
+        self._progress: dict[str, dict] = {}
+        if self.progress_path.exists():
+            self._progress = json.loads(self.progress_path.read_text(encoding="utf-8"))
         if self.index_path.exists():
             for t in json.loads(self.index_path.read_text(encoding="utf-8")):
                 self._tracks[t["id"]] = t
@@ -86,10 +91,29 @@ class Library:
                 if track_id in pl["track_ids"]:
                     pl["track_ids"].remove(track_id)
             self._save_playlists()
+            if self._progress.pop(track_id, None):
+                self._write(self.progress_path, self._progress)
         for name in (track["audio_file"], track.get("cover_file")):
             if name:
                 (self.root / name).unlink(missing_ok=True)
         return True
+
+    # ---- listening progress -----------------------------------------------
+
+    def merge_progress(self, entries: dict[str, dict]) -> dict[str, dict]:
+        """Merge positions reported by a device (newest "at" wins per track) and return the full set."""
+        with self._lock:
+            changed = False
+            for track_id, entry in entries.items():
+                if track_id not in self._tracks:
+                    continue
+                current = self._progress.get(track_id)
+                if current is None or entry["at"] > current["at"]:
+                    self._progress[track_id] = {"pos": entry["pos"], "played": entry["played"], "at": entry["at"]}
+                    changed = True
+            if changed:
+                self._write(self.progress_path, self._progress)
+            return dict(self._progress)
 
     # ---- playlists --------------------------------------------------------
 

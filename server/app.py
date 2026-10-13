@@ -12,7 +12,7 @@ import yt_dlp
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from downloader import SECTIONS, Downloader, default_ffmpeg, js_runtime
 from library import Library
@@ -54,6 +54,16 @@ def _section(section: str | None) -> str | None:
 
 class PlaylistTrackRequest(BaseModel):
     track_id: str
+
+
+class ProgressEntry(BaseModel):
+    pos: float = Field(ge=0)
+    played: bool = False
+    at: int  # when the device recorded it, ms since epoch
+
+
+class ProgressSync(BaseModel):
+    entries: dict[str, ProgressEntry] = {}
 
 
 def public(track: dict) -> dict:
@@ -122,6 +132,12 @@ def retry_jobs(req: RetryRequest):
 @app.delete("/api/jobs/queued")
 def cancel_queued():
     return {"cancelled": downloader.cancel_queued()}
+
+
+@app.post("/api/progress")
+def sync_progress(req: ProgressSync):
+    """Devices send their listening positions and get back everyone's (newest wins)."""
+    return library.merge_progress({k: v.model_dump() for k, v in req.entries.items()})
 
 
 @app.get("/api/playlists")

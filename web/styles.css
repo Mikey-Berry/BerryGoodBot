@@ -231,3 +231,8 @@ main { padding: 4px 16px 0; }
 }
 .sections button { padding: 8px; border-radius: 9px; color: var(--muted); font-weight: 600; font-size: 15px; }
 .sections button.on { background: var(--surface-2); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+
+/* Podcast progress in the list */
+.resume-bar { display: block; height: 3px; margin-top: 5px; border-radius: 2px; background: var(--surface-2); overflow: hidden; max-width: 160px; }
+.resume-bar span { display: block; height: 100%; background: var(--accent); }
+.track .meta.played strong { color: var(--muted); }
