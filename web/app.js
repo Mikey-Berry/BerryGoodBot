@@ -120,10 +120,12 @@ const state = {
   filter: '',
   playlists: prefs.get('playlists', []), // cached so they still show with the PC off
   view: prefs.get('view', 'all'),        // 'all' or a playlist id
+  section: prefs.get('section', 'music'), // music | podcasts
   shuffle: prefs.get('shuffle', false),
   repeat: prefs.get('repeat', 'off'), // off | all | one
   autosave: prefs.get('autosave', true),
-  pendingAdds: prefs.get('pendingAdds', []),
+  // Links added while the PC was off: { url, section }. (Older versions stored bare URLs.)
+  pendingAdds: prefs.get('pendingAdds', []).map((p) => (typeof p === 'string' ? { url: p, section: null } : p)),
   pendingDeletes: prefs.get('pendingDeletes', []),
   dismissed: new Set(prefs.get('dismissedJobs', [])),
 };
@@ -133,13 +135,18 @@ let audioUrl = null;
 
 const trackById = (id) => state.server.get(id) || state.local.get(id);
 
+const SECTION_NAMES = { music: 'Music', podcasts: 'Podcasts' };
+const sectionOf = (item) => item?.section || 'music';
+
+// Songs in the section being viewed (Music or Podcasts), newest first.
 function allTracks() {
   const merged = new Map(state.local);
   for (const [id, t] of state.server) merged.set(id, t);
-  return [...merged.values()].sort((a, b) => b.added_at - a.added_at);
+  return [...merged.values()].filter((t) => sectionOf(t) === state.section).sort((a, b) => b.added_at - a.added_at);
 }
 
-const currentPlaylist = () => state.playlists.find((pl) => pl.id === state.view) || null;
+const sectionPlaylists = () => state.playlists.filter((pl) => sectionOf(pl) === state.section);
+const currentPlaylist = () => sectionPlaylists().find((pl) => pl.id === state.view) || null;
 
 function visibleTracks() {
   const q = state.filter.trim().toLowerCase();
@@ -204,6 +211,14 @@ async function checkHealth() {
 async function refreshTracks() {
   const tracks = await (await api('/tracks')).json();
   state.server = new Map(tracks.map((t) => [t.id, t]));
+  for (const t of tracks) {
+    const saved = state.local.get(t.id);
+    if (saved && sectionOf(saved) !== sectionOf(t)) {
+      const meta = { ...saved, section: t.section };
+      state.local.set(t.id, meta);
+      db.put('tracks', meta).catch(() => {});
+    }
+  }
   renderTracks();
 }
 
@@ -221,15 +236,16 @@ function setPlaylists(list) {
 
 /* ---------- adding songs ---------- */
 
-async function addUrl(raw) {
+// Links added in the app go to the section being viewed.
+async function addUrl(raw, section = state.section) {
   const url = extractUrl(raw);
   if (!url) { toast("That doesn't look like a link."); return; }
   try {
-    await api('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+    await api('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, section }) });
     pollJobs();
   } catch (e) {
     if (e instanceof ApiError) { toast(e.message); return; }
-    state.pendingAdds.push(url);
+    state.pendingAdds.push({ url, section });
     prefs.set('pendingAdds', state.pendingAdds);
     toast('PC is offline. The link will be sent when it’s back.');
   }
@@ -243,7 +259,7 @@ async function flushPending() {
     prefs.set('pendingDeletes', state.pendingDeletes);
   }
   while (state.pendingAdds.length) {
-    await api('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: state.pendingAdds[0] }) });
+    await api('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state.pendingAdds[0]) });
     state.pendingAdds.shift();
     prefs.set('pendingAdds', state.pendingAdds);
   }
@@ -277,7 +293,7 @@ function renderJobs() {
   const now = Date.now() / 1000;
   // Playlist summaries stay up a little longer so there's time to read them.
   const showDone = (j) => j.finished_at >= now - (j.kind === 'playlist' ? 20 : 8);
-  const items = state.pendingAdds.map((url) => `
+  const items = state.pendingAdds.map(({ url }) => `
     <li class="job"><div class="label"><strong>${esc(url)}</strong><small>Waiting for your PC to come online</small></div></li>`);
   const dismiss = (j) => `<button type="button" data-dismiss="${j.id}" aria-label="Dismiss">${ICONS.close}</button>`;
   const row = (j, label, extra = '') => `<li class="job${j.status === 'error' ? ' error' : ''}">
@@ -315,7 +331,8 @@ function renderJobs() {
       const retry = j.kind === 'video' ? `<button type="button" class="text-btn" data-retry="${j.id}">Retry</button>` : '';
       items.push(row(j, j.error, retry + dismiss(j)));
     } else if (j.status === 'done' && showDone(j)) {
-      let label = j.duplicate ? 'Already in your library' : 'Added to your library';
+      const where = SECTION_NAMES[sectionOf(j)];
+      let label = j.duplicate ? `Already in ${where}` : `Added to ${where}`;
       if (j.playlist) {
         const { added, already } = j.playlist;
         label = `Playlist: ${added} song${added === 1 ? '' : 's'} queued` + (already ? ` · ${already} already in your library` : '');
@@ -434,6 +451,33 @@ async function deleteTrack(id) {
   renderTracks();
 }
 
+/* ---------- Music / Podcasts ---------- */
+
+const otherSection = (section) => (section === 'music' ? 'podcasts' : 'music');
+
+function renderSection() {
+  for (const btn of document.querySelectorAll('[data-section]')) {
+    const on = btn.dataset.section === state.section;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-selected', on);
+  }
+  const music = state.section === 'music';
+  $('add-url').placeholder = music ? 'Paste a video link' : 'Paste a podcast or video link';
+  $('search').placeholder = music ? 'Search your music' : 'Search your podcasts';
+}
+
+$('sections').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-section]');
+  if (!btn || btn.dataset.section === state.section) return;
+  state.section = btn.dataset.section;
+  prefs.set('section', state.section);
+  setView('all');
+  renderSection();
+  renderViews();
+  renderTracks();
+  window.scrollTo({ top: 0 });
+});
+
 /* ---------- playlists ---------- */
 
 function setView(view) {
@@ -445,8 +489,8 @@ function renderViews() {
   const count = (pl) => pl.track_ids.filter((id) => trackById(id)).length;
   const chip = (view, label, extra = '') =>
     `<button type="button" class="chip${state.view === view ? ' on' : ''}" data-view="${view}">${label}${extra}</button>`;
-  $('views').innerHTML = chip('all', 'All songs')
-    + state.playlists.map((pl) => chip(pl.id, esc(pl.name), state.view === pl.id
+  $('views').innerHTML = chip('all', `All ${SECTION_NAMES[state.section].toLowerCase()}`)
+    + sectionPlaylists().map((pl) => chip(pl.id, esc(pl.name), state.view === pl.id
       ? ` <span class="chip-more" aria-label="Playlist options">${ICONS.more}</span>` : ` <small>${count(pl)}</small>`)).join('')
     + `<button type="button" class="chip new" data-new-playlist>+ New</button>`;
 }
@@ -469,7 +513,7 @@ async function playlistCall(path, method, body) {
 async function newPlaylist() {
   const name = prompt('Playlist name', '')?.trim();
   if (!name) return null;
-  const pl = await playlistCall('/playlists', 'POST', { name });
+  const pl = await playlistCall('/playlists', 'POST', { name, section: state.section });
   if (pl) await refreshPlaylists().catch(() => {});
   return pl;
 }
@@ -521,7 +565,8 @@ function openPickSheet(trackId) {
 }
 
 function renderPickList() {
-  $('pick-list').innerHTML = state.playlists.map((pl) => {
+  const section = sectionOf(trackById(sheetTrack));
+  $('pick-list').innerHTML = state.playlists.filter((pl) => sectionOf(pl) === section).map((pl) => {
     const on = pl.track_ids.includes(sheetTrack);
     return `<button type="button" class="pick${on ? ' on' : ''}" data-pick="${pl.id}">
       <span>${esc(pl.name)}</span><span class="check">${on ? ICONS.local : ''}</span></button>`;
@@ -555,8 +600,9 @@ function renderTracks() {
   const list = visibleTracks();
   const pl = currentPlaylist();
   $('empty').hidden = pl ? list.length > 0 : allTracks().length > 0;
-  $('empty').textContent = pl ? 'This playlist is empty. Use a song’s ⋯ menu to add it here.'
-    : 'No songs yet. Paste a link above to add one.';
+  $('empty').textContent = pl ? `This playlist is empty. Use ${state.section === 'music' ? 'a song’s' : 'an episode’s'} ⋯ menu to add it here.`
+    : state.section === 'music' ? 'No music yet. Paste a link above to add some.'
+    : 'No podcasts yet. Paste a link above while on this tab, or move something here from Music with its ⋯ menu.';
   $('list-actions').hidden = list.length === 0;
   $('tracks').innerHTML = list.map((t) => {
     const cover = coverUrl(t);
@@ -989,6 +1035,8 @@ function openTrackSheet(id) {
   const pl = currentPlaylist();
   $('sheet-remove-pl').hidden = !pl;
   if (pl) $('sheet-remove-pl').textContent = `Remove from “${pl.name}”`;
+  $('sheet-move').hidden = !state.server.has(id);
+  $('sheet-move').textContent = `Move to ${SECTION_NAMES[otherSection(sectionOf(t))]}`;
   openSheet($('track-sheet'));
 }
 
@@ -1000,6 +1048,23 @@ $('sheet-source').addEventListener('click', () => {
 });
 $('sheet-delete').addEventListener('click', () => { closeSheets(); deleteTrack(sheetTrack); });
 $('sheet-add-pl').addEventListener('click', () => { closeSheets(); openPickSheet(sheetTrack); });
+$('sheet-move').addEventListener('click', async () => {
+  closeSheets();
+  const id = sheetTrack;
+  const section = otherSection(sectionOf(trackById(id)));
+  if (!state.online) { toast('Connect to your PC to move songs.'); return; }
+  try {
+    const updated = await (await api(`/tracks/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ section }),
+    })).json();
+    state.server.set(id, updated);
+    await refreshTracks();      // also updates this device's saved copy
+    await refreshPlaylists();   // it left the old section's playlists
+    toast(`Moved to ${SECTION_NAMES[section]}.`);
+  } catch {
+    toast('Couldn’t reach your PC.');
+  }
+});
 $('sheet-remove-pl').addEventListener('click', async () => {
   closeSheets();
   const pl = currentPlaylist();
@@ -1094,6 +1159,7 @@ async function boot() {
   renderPlayState();
 
   try { await loadLocal(); } catch { toast('Couldn’t open saved songs on this device.'); }
+  renderSection();
   renderViews();
   renderTracks();
   renderJobs();

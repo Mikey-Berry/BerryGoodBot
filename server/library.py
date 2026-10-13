@@ -93,18 +93,33 @@ class Library:
 
     # ---- playlists --------------------------------------------------------
 
+    def set_section(self, track_id: str, section: str) -> dict | None:
+        """Move a song between Music and Podcasts. Playlists belong to one section, so it leaves
+        the other section's playlists."""
+        with self._lock:
+            track = self._tracks.get(track_id)
+            if not track:
+                return None
+            track["section"] = section
+            self._save()
+            for pl in self._playlists.values():
+                if pl.get("section", "music") != section and track_id in pl["track_ids"]:
+                    pl["track_ids"].remove(track_id)
+            self._save_playlists()
+            return track
+
     @staticmethod
     def _public_playlist(pl: dict) -> dict:
-        return {k: pl[k] for k in ("id", "name", "track_ids", "created_at")}
+        return {k: pl[k] for k in ("id", "name", "track_ids", "created_at")} | {"section": pl.get("section", "music")}
 
     def list_playlists(self) -> list[dict]:
         with self._lock:
             ordered = sorted(self._playlists.values(), key=lambda pl: pl["created_at"])
             return [self._public_playlist(pl) for pl in ordered]
 
-    def create_playlist(self, name: str) -> dict:
+    def create_playlist(self, name: str, section: str = "music") -> dict:
         with self._lock:
-            pl = {"id": uuid.uuid4().hex[:12], "name": name, "track_ids": [], "created_at": time.time()}
+            pl = {"id": uuid.uuid4().hex[:12], "name": name, "section": section, "track_ids": [], "created_at": time.time()}
             self._playlists[pl["id"]] = pl
             self._save_playlists()
             return self._public_playlist(pl)

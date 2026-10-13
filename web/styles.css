@@ -32,7 +32,7 @@ svg { width: 24px; height: 24px; fill: currentColor; }
 /* Header */
 .top {
   position: sticky; top: 0; z-index: 5;
-  display: flex; align-items: center; gap: 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
   padding: calc(12px + var(--safe-top)) 16px 10px;
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
@@ -223,3 +223,11 @@ main { padding: 4px 16px 0; }
 .pick .check { width: 20px; height: 20px; color: var(--ok); }
 .pick .check svg { width: 20px; height: 20px; }
 .empty-note { color: var(--muted); margin: 4px 2px; font-size: 14px; }
+
+/* Music / Podcasts switch */
+.sections {
+  flex-basis: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+  padding: 4px; border-radius: 12px; background: var(--surface);
+}
+.sections button { padding: 8px; border-radius: 9px; color: var(--muted); font-weight: 600; font-size: 15px; }
+.sections button.on { background: var(--surface-2); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.35); }

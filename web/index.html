@@ -23,6 +23,10 @@
     <button id="open-settings" class="icon-btn" type="button" aria-label="Settings">
       <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm7.4-2.5a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.7 7.7 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.7 7.7 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.6h4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5Z"/></svg>
     </button>
+    <div id="sections" class="sections" role="tablist" aria-label="Library">
+      <button type="button" role="tab" data-section="music">Music</button>
+      <button type="button" role="tab" data-section="podcasts">Podcasts</button>
+    </div>
   </header>
 
   <main>
@@ -83,6 +87,7 @@
     <p id="sheet-sub"></p>
     <button id="sheet-add-pl" type="button">Add to playlist…</button>
     <button id="sheet-remove-pl" type="button" hidden>Remove from playlist</button>
+    <button id="sheet-move" type="button">Move to Podcasts</button>
     <button id="sheet-save" type="button">Save to this device</button>
     <button id="sheet-source" type="button">Open original link</button>
     <button id="sheet-delete" class="danger" type="button">Delete song</button>

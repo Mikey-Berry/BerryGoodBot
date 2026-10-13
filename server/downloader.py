@@ -23,6 +23,16 @@ PAUSE_BETWEEN_DOWNLOADS = (4, 8)
 # YouTube sometimes refuses a download with 403 Forbidden; it usually works a few minutes later.
 MAX_ATTEMPTS = 3
 
+SECTIONS = ("music", "podcasts")
+# Without an explicit section, anything this long that YouTube doesn't label as music is a podcast.
+PODCAST_MIN_SECONDS = 20 * 60
+
+
+def guess_section(info: dict) -> str:
+    if "Music" in (info.get("categories") or []):
+        return "music"
+    return "podcasts" if (info.get("duration") or 0) >= PODCAST_MIN_SECONDS else "music"
+
 
 class _YtdlpLog:
     """Send yt-dlp's warnings and errors to the server log instead of discarding them."""
@@ -56,7 +66,7 @@ class Downloader:
 
     # ---- public API -------------------------------------------------------
 
-    def submit(self, url: str, title: str | None = None) -> dict:
+    def submit(self, url: str, title: str | None = None, section: str | None = None) -> dict:
         job = {
             "id": uuid.uuid4().hex[:12],
             "url": url,
@@ -71,6 +81,7 @@ class Downloader:
             "finished_at": None,
             "playlist": None,  # {"added": n, "already": n} for playlist jobs
             "attempt": 1,
+            "section": section,  # music | podcasts; None means sort it automatically
         }
         with self._lock:
             self.jobs[job["id"]] = job
@@ -160,7 +171,7 @@ class Downloader:
             if ie_key and entry.get("id") and self.library.find_by_source(f"{ie_key}:{entry['id']}"):
                 already += 1
                 continue
-            self.submit(url, title=entry.get("title"))
+            self.submit(url, title=entry.get("title"), section=self.jobs[job_id]["section"])
             added += 1
         if not added and not already:
             raise DownloadError("Couldn't find any videos in that playlist.")
@@ -207,7 +218,8 @@ class Downloader:
                 if raw.get("id") and raw.get("extractor_key"):
                     existing = self.library.find_by_source(f"{raw['extractor_key']}:{raw['id']}")
                     if existing:
-                        return {"track_id": existing["id"], "title": existing["title"], "duplicate": True}
+                        return {"track_id": existing["id"], "title": existing["title"], "duplicate": True,
+                                "section": existing.get("section", "music")}
                 self._update(job_id, title=raw.get("title"), status="downloading")
                 info = ydl.process_ie_result(raw, download=True)
 
@@ -219,9 +231,10 @@ class Downloader:
                 "duration": info.get("duration"),
                 "source_url": info.get("webpage_url") or url,
                 "source_id": f"{info.get('extractor_key')}:{info.get('id')}",
+                "section": self.jobs.get(job_id, {}).get("section") or guess_section(info),
             }
             track = self.library.add(track_id, audio, covers[0] if covers else None, meta)
-            return {"track_id": track["id"], "title": track["title"], "downloaded": True}
+            return {"track_id": track["id"], "title": track["title"], "downloaded": True, "section": track["section"]}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

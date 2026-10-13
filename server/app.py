@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from downloader import Downloader, default_ffmpeg, js_runtime
+from downloader import SECTIONS, Downloader, default_ffmpeg, js_runtime
 from library import Library
 
 HERE = Path(__file__).resolve().parent
@@ -30,6 +30,7 @@ app = FastAPI(title="BerryGoodTunes")
 
 class JobRequest(BaseModel):
     url: str
+    section: str | None = None  # music | podcasts; omitted = sort automatically
 
 
 class RetryRequest(BaseModel):
@@ -38,6 +39,17 @@ class RetryRequest(BaseModel):
 
 class PlaylistRequest(BaseModel):
     name: str
+    section: str = "music"
+
+
+class TrackUpdate(BaseModel):
+    section: str
+
+
+def _section(section: str | None) -> str | None:
+    if section is not None and section not in SECTIONS:
+        raise HTTPException(400, f"Section must be one of: {', '.join(SECTIONS)}.")
+    return section
 
 
 class PlaylistTrackRequest(BaseModel):
@@ -48,7 +60,7 @@ def public(track: dict) -> dict:
     return {
         k: track.get(k)
         for k in ("id", "title", "artist", "duration", "source_url", "size", "added_at")
-    } | {"has_cover": bool(track.get("cover_file"))}
+    } | {"has_cover": bool(track.get("cover_file")), "section": track.get("section", "music")}
 
 
 @app.get("/api/health")
@@ -76,6 +88,11 @@ def track_cover(track_id: str):
     return FileResponse(cover, media_type="image/jpeg")
 
 
+@app.patch("/api/tracks/{track_id}")
+def update_track(track_id: str, req: TrackUpdate):
+    return public(library.set_section(track_id, _section(req.section)) or _404())
+
+
 @app.delete("/api/tracks/{track_id}")
 def delete_track(track_id: str):
     # Idempotent so offline deletes can be replayed safely.
@@ -94,7 +111,7 @@ def create_job(req: JobRequest):
     match = re.search(r"https?://\S+", req.url)
     if not match:
         raise HTTPException(400, "That doesn't look like a link.")
-    return downloader.submit(match.group(0))
+    return downloader.submit(match.group(0), section=_section(req.section))
 
 
 @app.post("/api/jobs/retry")
@@ -121,7 +138,7 @@ def _playlist_name(name: str) -> str:
 
 @app.post("/api/playlists", status_code=201)
 def create_playlist(req: PlaylistRequest):
-    return library.create_playlist(_playlist_name(req.name))
+    return library.create_playlist(_playlist_name(req.name), _section(req.section))
 
 
 @app.patch("/api/playlists/{playlist_id}")
