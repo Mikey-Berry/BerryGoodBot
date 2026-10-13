@@ -59,7 +59,17 @@ Now in YouTube (or any app), tap **Share → Add to BerryGoodTunes**. Open Berry
   - A link to a *video that's playing inside a playlist* (`watch?v=…&list=…`) adds just that one video.
   - The songs go into your library like any others; put them into your own playlists if you want them grouped. Adding the same YouTube playlist again later only fetches songs you don't already have.
 - **Failed downloads:** when two or more fail, a **Retry all** row appears above them. Each failed song also has its own **Retry**, and retried songs don't create duplicates.
-- **Playlists:** the row of tabs under the search box switches between **All songs** and your playlists. Use them to keep podcasts and learning content apart from music.
+- **Music and Podcasts:** the switch at the top keeps spoken-word content (podcasts, lectures, audiobooks) out of your music. Each side has its own list, search, playlists, and Play/Shuffle. Music is the default.
+  - **Links pasted in the app** go to whichever side you're on.
+  - **Links from the Share-sheet Shortcut are sorted automatically:** anything YouTube labels as Music goes to Music, and anything else 20 minutes or longer goes to Podcasts. The download banner says where each one went.
+  - **Wrong side?** Use the song's **⋯** menu → **Move to Podcasts** / **Move to Music**. Moving removes it from the old side's playlists.
+  - Optional: make a second Shortcut, e.g. **Add to Podcasts**, identical to the first but with a second JSON field: key `section`, value `podcasts`. It always sends to Podcasts. Use `music` for the reverse.
+- **Resume where you left off:** podcasts, and anything 20 minutes or longer (like a long mix in Music), remember where you stopped and pick up a few seconds before that spot. Regular songs always start from the beginning.
+  - The list shows **"23 min left"** with a progress bar, or **Played** once you've finished (stopping in the last 30 seconds counts).
+  - Playing something marked Played starts it from the beginning.
+  - The **⋯** menu has **Mark as played / Mark as unplayed**. Unplayed also clears a half-way position.
+  - Positions sync through your PC, so you can pause on one device and continue on another.
+- **Playlists:** the row of tabs under the search box switches between **All** and that side's playlists. Playlists belong to the side they were created on.
   - **+ New** creates a playlist.
   - A song's **⋯** menu → **Add to playlist…** adds or removes it (tap a playlist to toggle it). When viewing a playlist, the menu also offers **Remove from "…"**.
   - Tap the **selected** tab again to rename or delete the playlist. Deleting a playlist never deletes its songs.

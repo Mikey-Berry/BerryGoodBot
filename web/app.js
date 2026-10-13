@@ -120,10 +120,12 @@ const state = {
   filter: '',
   playlists: prefs.get('playlists', []), // cached so they still show with the PC off
   view: prefs.get('view', 'all'),        // 'all' or a playlist id
+  section: prefs.get('section', 'music'), // music | podcasts
   shuffle: prefs.get('shuffle', false),
   repeat: prefs.get('repeat', 'off'), // off | all | one
   autosave: prefs.get('autosave', true),
-  pendingAdds: prefs.get('pendingAdds', []),
+  // Links added while the PC was off: { url, section }. (Older versions stored bare URLs.)
+  pendingAdds: prefs.get('pendingAdds', []).map((p) => (typeof p === 'string' ? { url: p, section: null } : p)),
   pendingDeletes: prefs.get('pendingDeletes', []),
   dismissed: new Set(prefs.get('dismissedJobs', [])),
 };
@@ -133,13 +135,18 @@ let audioUrl = null;
 
 const trackById = (id) => state.server.get(id) || state.local.get(id);
 
+const SECTION_NAMES = { music: 'Music', podcasts: 'Podcasts' };
+const sectionOf = (item) => item?.section || 'music';
+
+// Songs in the section being viewed (Music or Podcasts), newest first.
 function allTracks() {
   const merged = new Map(state.local);
   for (const [id, t] of state.server) merged.set(id, t);
-  return [...merged.values()].sort((a, b) => b.added_at - a.added_at);
+  return [...merged.values()].filter((t) => sectionOf(t) === state.section).sort((a, b) => b.added_at - a.added_at);
 }
 
-const currentPlaylist = () => state.playlists.find((pl) => pl.id === state.view) || null;
+const sectionPlaylists = () => state.playlists.filter((pl) => sectionOf(pl) === state.section);
+const currentPlaylist = () => sectionPlaylists().find((pl) => pl.id === state.view) || null;
 
 function visibleTracks() {
   const q = state.filter.trim().toLowerCase();
@@ -204,6 +211,14 @@ async function checkHealth() {
 async function refreshTracks() {
   const tracks = await (await api('/tracks')).json();
   state.server = new Map(tracks.map((t) => [t.id, t]));
+  for (const t of tracks) {
+    const saved = state.local.get(t.id);
+    if (saved && sectionOf(saved) !== sectionOf(t)) {
+      const meta = { ...saved, section: t.section };
+      state.local.set(t.id, meta);
+      db.put('tracks', meta).catch(() => {});
+    }
+  }
   renderTracks();
 }
 
@@ -221,15 +236,16 @@ function setPlaylists(list) {
 
 /* ---------- adding songs ---------- */
 
-async function addUrl(raw) {
+// Links added in the app go to the section being viewed.
+async function addUrl(raw, section = state.section) {
   const url = extractUrl(raw);
   if (!url) { toast("That doesn't look like a link."); return; }
   try {
-    await api('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+    await api('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, section }) });
     pollJobs();
   } catch (e) {
     if (e instanceof ApiError) { toast(e.message); return; }
-    state.pendingAdds.push(url);
+    state.pendingAdds.push({ url, section });
     prefs.set('pendingAdds', state.pendingAdds);
     toast('PC is offline. The link will be sent when it’s back.');
   }
@@ -243,7 +259,7 @@ async function flushPending() {
     prefs.set('pendingDeletes', state.pendingDeletes);
   }
   while (state.pendingAdds.length) {
-    await api('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: state.pendingAdds[0] }) });
+    await api('/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state.pendingAdds[0]) });
     state.pendingAdds.shift();
     prefs.set('pendingAdds', state.pendingAdds);
   }
@@ -277,7 +293,7 @@ function renderJobs() {
   const now = Date.now() / 1000;
   // Playlist summaries stay up a little longer so there's time to read them.
   const showDone = (j) => j.finished_at >= now - (j.kind === 'playlist' ? 20 : 8);
-  const items = state.pendingAdds.map((url) => `
+  const items = state.pendingAdds.map(({ url }) => `
     <li class="job"><div class="label"><strong>${esc(url)}</strong><small>Waiting for your PC to come online</small></div></li>`);
   const dismiss = (j) => `<button type="button" data-dismiss="${j.id}" aria-label="Dismiss">${ICONS.close}</button>`;
   const row = (j, label, extra = '') => `<li class="job${j.status === 'error' ? ' error' : ''}">
@@ -315,7 +331,8 @@ function renderJobs() {
       const retry = j.kind === 'video' ? `<button type="button" class="text-btn" data-retry="${j.id}">Retry</button>` : '';
       items.push(row(j, j.error, retry + dismiss(j)));
     } else if (j.status === 'done' && showDone(j)) {
-      let label = j.duplicate ? 'Already in your library' : 'Added to your library';
+      const where = SECTION_NAMES[sectionOf(j)];
+      let label = j.duplicate ? `Already in ${where}` : `Added to ${where}`;
       if (j.playlist) {
         const { added, already } = j.playlist;
         label = `Playlist: ${added} song${added === 1 ? '' : 's'} queued` + (already ? ` · ${already} already in your library` : '');
@@ -434,6 +451,33 @@ async function deleteTrack(id) {
   renderTracks();
 }
 
+/* ---------- Music / Podcasts ---------- */
+
+const otherSection = (section) => (section === 'music' ? 'podcasts' : 'music');
+
+function renderSection() {
+  for (const btn of document.querySelectorAll('[data-section]')) {
+    const on = btn.dataset.section === state.section;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-selected', on);
+  }
+  const music = state.section === 'music';
+  $('add-url').placeholder = music ? 'Paste a video link' : 'Paste a podcast or video link';
+  $('search').placeholder = music ? 'Search your music' : 'Search your podcasts';
+}
+
+$('sections').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-section]');
+  if (!btn || btn.dataset.section === state.section) return;
+  state.section = btn.dataset.section;
+  prefs.set('section', state.section);
+  setView('all');
+  renderSection();
+  renderViews();
+  renderTracks();
+  window.scrollTo({ top: 0 });
+});
+
 /* ---------- playlists ---------- */
 
 function setView(view) {
@@ -445,8 +489,8 @@ function renderViews() {
   const count = (pl) => pl.track_ids.filter((id) => trackById(id)).length;
   const chip = (view, label, extra = '') =>
     `<button type="button" class="chip${state.view === view ? ' on' : ''}" data-view="${view}">${label}${extra}</button>`;
-  $('views').innerHTML = chip('all', 'All songs')
-    + state.playlists.map((pl) => chip(pl.id, esc(pl.name), state.view === pl.id
+  $('views').innerHTML = chip('all', `All ${SECTION_NAMES[state.section].toLowerCase()}`)
+    + sectionPlaylists().map((pl) => chip(pl.id, esc(pl.name), state.view === pl.id
       ? ` <span class="chip-more" aria-label="Playlist options">${ICONS.more}</span>` : ` <small>${count(pl)}</small>`)).join('')
     + `<button type="button" class="chip new" data-new-playlist>+ New</button>`;
 }
@@ -469,7 +513,7 @@ async function playlistCall(path, method, body) {
 async function newPlaylist() {
   const name = prompt('Playlist name', '')?.trim();
   if (!name) return null;
-  const pl = await playlistCall('/playlists', 'POST', { name });
+  const pl = await playlistCall('/playlists', 'POST', { name, section: state.section });
   if (pl) await refreshPlaylists().catch(() => {});
   return pl;
 }
@@ -521,7 +565,8 @@ function openPickSheet(trackId) {
 }
 
 function renderPickList() {
-  $('pick-list').innerHTML = state.playlists.map((pl) => {
+  const section = sectionOf(trackById(sheetTrack));
+  $('pick-list').innerHTML = state.playlists.filter((pl) => sectionOf(pl) === section).map((pl) => {
     const on = pl.track_ids.includes(sheetTrack);
     return `<button type="button" class="pick${on ? ' on' : ''}" data-pick="${pl.id}">
       <span>${esc(pl.name)}</span><span class="check">${on ? ICONS.local : ''}</span></button>`;
@@ -555,19 +600,22 @@ function renderTracks() {
   const list = visibleTracks();
   const pl = currentPlaylist();
   $('empty').hidden = pl ? list.length > 0 : allTracks().length > 0;
-  $('empty').textContent = pl ? 'This playlist is empty. Use a song’s ⋯ menu to add it here.'
-    : 'No songs yet. Paste a link above to add one.';
+  $('empty').textContent = pl ? `This playlist is empty. Use ${state.section === 'music' ? 'a song’s' : 'an episode’s'} ⋯ menu to add it here.`
+    : state.section === 'music' ? 'No music yet. Paste a link above to add some.'
+    : 'No podcasts yet. Paste a link above while on this tab, or move something here from Music with its ⋯ menu.';
   $('list-actions').hidden = list.length === 0;
   $('tracks').innerHTML = list.map((t) => {
     const cover = coverUrl(t);
     const [cls, icon, label] = state.local.has(t.id) ? ['local', ICONS.local, 'Saved on this device']
       : state.saving.has(t.id) ? ['saving', ICONS.saving, 'Saving to this device']
       : ['', ICONS.cloud, 'On your PC only'];
-    const sub = [t.artist, fmtTime(t.duration)].filter(Boolean).join(' · ');
+    const info = progressInfo(t);
+    const sub = [t.artist, info ? info.text : fmtTime(t.duration)].filter(Boolean).join(' · ');
+    const bar = info?.frac != null && !info.played ? `<span class="resume-bar"><span style="width:${Math.round(info.frac * 100)}%"></span></span>` : '';
     return `<li class="track${t.id === state.current ? ' playing' : ''}${isPlayable(t.id) ? '' : ' unavailable'}" data-id="${t.id}">
       <button class="main" type="button">
         <span class="cover"><img alt="" ${cover ? `src="${esc(cover)}"` : ''} onerror="this.removeAttribute('src')"></span>
-        <span class="meta"><strong>${esc(t.title)}</strong><small>${esc(sub)}</small></span>
+        <span class="meta${info?.played ? ' played' : ''}"><strong>${esc(t.title)}</strong><small>${esc(sub)}</small>${bar}</span>
       </button>
       <span class="state ${cls}" title="${label}" aria-label="${label}">${icon}</span>
       <button class="icon-btn more" type="button" aria-label="More">${ICONS.more}</button>
@@ -607,6 +655,85 @@ $('add-form').addEventListener('submit', async (e) => {
   input.value = '';
   input.blur();
 });
+
+/* ---------- resume where you left off (podcasts and long items) ---------- */
+
+const RESUME_MIN_SECONDS = 20 * 60; // music this long (e.g. a mix) resumes too
+// Stopping in the last 30 s (or last 10% of a short item) counts as played.
+const finishedWithin = (duration) => Math.min(30, duration * 0.1);
+const REWIND_ON_RESUME = 5;         // pick up a few seconds early for context
+
+const progress = prefs.get('progress', {}); // track id -> { pos, played, at }
+const isResumable = (t, duration) => !!t
+  && (sectionOf(t) === 'podcasts' || (t.duration || duration || 0) >= RESUME_MIN_SECONDS);
+
+let lastPush = 0;
+function persistProgress(urgent) {
+  prefs.set('progress', progress);
+  if (urgent || Date.now() - lastPush > 15000) pushProgress();
+}
+
+// Send this device's positions to the PC and take any newer ones from other devices.
+async function pushProgress() {
+  if (!state.online) return;
+  lastPush = Date.now();
+  try {
+    const res = await api('/progress', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries: progress }),
+    });
+    let changed = false;
+    for (const [id, entry] of Object.entries(await res.json())) {
+      if (!progress[id] || entry.at > progress[id].at) { progress[id] = entry; changed = true; }
+    }
+    if (changed) { prefs.set('progress', progress); renderTracks(); }
+  } catch { /* offline; the next sync sends it */ }
+}
+
+// Save where a player is in a resumable item. Only once the saved spot has been applied to
+// that player, so the 0:00 it sits at while loading never overwrites real progress.
+function recordProgress(id, el, urgent = false) {
+  const t = trackById(id);
+  if (!id || el.dataset.resumeFor !== id || !isResumable(t, el.duration)) return;
+  if (!Number.isFinite(el.duration) || !el.duration) return;
+  const played = el.ended || el.duration - el.currentTime < finishedWithin(el.duration);
+  const before = progressInfo(t)?.text;
+  progress[id] = { pos: played ? 0 : Math.floor(el.currentTime), played, at: Date.now() };
+  persistProgress(urgent);
+  if (urgent || progressInfo(t)?.text !== before) renderTracks();
+}
+
+// Once a player has loaded an item, jump to where it was left off (if it's resumable and unfinished).
+function applyResume(el, id) {
+  delete el.dataset.resumeFor;
+  const url = el.src;
+  const go = () => {
+    if (el.src !== url) return; // the player moved on to something else meanwhile
+    const p = progress[id];
+    const d = el.duration;
+    if (p && !p.played && p.pos > 10 && isResumable(trackById(id), d) && p.pos < d - finishedWithin(d)) {
+      el.currentTime = Math.max(0, p.pos - REWIND_ON_RESUME);
+      logPlay(`resume ${trackById(id)?.title} at ${fmtTime(el.currentTime)}`);
+    }
+    el.dataset.resumeFor = id;
+  };
+  if (el.readyState >= 1) go(); else el.addEventListener('loadedmetadata', go, { once: true });
+}
+
+function progressInfo(t) {
+  const p = progress[t.id];
+  if (!p || !isResumable(t)) return null;
+  if (p.played) return { text: 'Played', frac: 1, played: true };
+  if (p.pos <= 10) return null;
+  if (!t.duration) return { text: `Stopped at ${fmtTime(p.pos)}`, frac: null };
+  return { text: `${Math.max(1, Math.round((t.duration - p.pos) / 60))} min left`, frac: p.pos / t.duration };
+}
+
+let lastRecord = 0;
+function recordWhilePlaying() {
+  if (Date.now() - lastRecord < 5000) return;
+  lastRecord = Date.now();
+  recordProgress(state.current, audio);
+}
 
 /* ---------- playback ---------- */
 
@@ -679,6 +806,7 @@ async function prepareNext() {
   el.loop = false;
   el.src = url;
   el.load();
+  applyResume(el, id);
   prepared = { qi: i, id, url, el };
 }
 
@@ -706,10 +834,12 @@ function afterTrackChange() {
 
 // Start a song on the active player (user picked it, or nothing was preloaded).
 function startTrack(id, url) {
+  recordProgress(state.current, audio, true);
   discardPrepared();
   releaseSrc(audioUrl);
   audioUrl = url;
   audio.src = url;
+  applyResume(audio, id);
   state.current = id;
   watchPlay(audio, `start ${trackById(id)?.title}`);
   afterTrackChange();
@@ -721,6 +851,7 @@ function handoff(overlap) {
   const p = prepared;
   prepared = null;
   const old = audio;
+  recordProgress(state.current, old, true);
   const oldUrl = audioUrl;
   audio = p.el;
   audioUrl = p.url;
@@ -775,12 +906,14 @@ function step(dir, auto = false) {
 // Normal path: start the next song a moment before this one ends.
 function onTimeUpdate() {
   renderProgress();
+  recordWhilePlaying();
   const left = audio.duration - audio.currentTime;
   if (!audio.paused && left < HANDOFF_SECONDS && canHandoff()) handoff(true);
 }
 
 // Fallback if the early handoff was missed (timeupdate can be sparse in the background).
 function onEnded() {
+  recordProgress(state.current, audio, true);
   logPlay(`ended: ${trackById(state.current)?.title}`);
   if (canHandoff()) { handoff(false); return; }
   step(1, true);
@@ -880,10 +1013,10 @@ if ('mediaSession' in navigator) {
 const onActive = (fn) => (e) => { if (e.target === audio && e.target.src !== SILENT) fn(e); };
 for (const el of players) {
   el.addEventListener('play', onActive(renderPlayState));
-  el.addEventListener('pause', onActive(renderPlayState));
+  el.addEventListener('pause', onActive(() => { renderPlayState(); recordProgress(state.current, audio, true); }));
   el.addEventListener('timeupdate', onActive(onTimeUpdate));
   el.addEventListener('loadedmetadata', onActive(() => { renderProgress(); updatePositionState(); }));
-  el.addEventListener('seeked', onActive(updatePositionState));
+  el.addEventListener('seeked', onActive(() => { updatePositionState(); recordProgress(state.current, audio, true); }));
   el.addEventListener('ended', onActive(onEnded));
   for (const type of ['stalled', 'waiting']) el.addEventListener(type, onActive(() => logPlay(type)));
   el.addEventListener('error', (e) => {
@@ -989,6 +1122,10 @@ function openTrackSheet(id) {
   const pl = currentPlaylist();
   $('sheet-remove-pl').hidden = !pl;
   if (pl) $('sheet-remove-pl').textContent = `Remove from “${pl.name}”`;
+  $('sheet-move').hidden = !state.server.has(id);
+  $('sheet-played').hidden = !isResumable(t);
+  $('sheet-played').textContent = progress[id]?.played || progress[id]?.pos > 10 ? 'Mark as unplayed' : 'Mark as played';
+  $('sheet-move').textContent = `Move to ${SECTION_NAMES[otherSection(sectionOf(t))]}`;
   openSheet($('track-sheet'));
 }
 
@@ -1000,6 +1137,31 @@ $('sheet-source').addEventListener('click', () => {
 });
 $('sheet-delete').addEventListener('click', () => { closeSheets(); deleteTrack(sheetTrack); });
 $('sheet-add-pl').addEventListener('click', () => { closeSheets(); openPickSheet(sheetTrack); });
+$('sheet-played').addEventListener('click', () => {
+  closeSheets();
+  const p = progress[sheetTrack];
+  const played = !(p?.played || p?.pos > 10); // "unplayed" also clears a half-way position
+  progress[sheetTrack] = { pos: 0, played, at: Date.now() };
+  persistProgress(true);
+  renderTracks();
+});
+$('sheet-move').addEventListener('click', async () => {
+  closeSheets();
+  const id = sheetTrack;
+  const section = otherSection(sectionOf(trackById(id)));
+  if (!state.online) { toast('Connect to your PC to move songs.'); return; }
+  try {
+    const updated = await (await api(`/tracks/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ section }),
+    })).json();
+    state.server.set(id, updated);
+    await refreshTracks();      // also updates this device's saved copy
+    await refreshPlaylists();   // it left the old section's playlists
+    toast(`Moved to ${SECTION_NAMES[section]}.`);
+  } catch {
+    toast('Couldn’t reach your PC.');
+  }
+});
 $('sheet-remove-pl').addEventListener('click', async () => {
   closeSheets();
   const pl = currentPlaylist();
@@ -1058,6 +1220,7 @@ async function sync() {
     await flushPending();
     await refreshTracks();
     await refreshPlaylists();
+    await pushProgress();
     await pollJobs();
     if (state.autosave) saveMissing();
   } catch {
@@ -1069,7 +1232,7 @@ async function sync() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { logPlay('app hidden'); return; }
+  if (document.hidden) { logPlay('app hidden'); recordProgress(state.current, audio, true); return; }
   logPlay(`app opened (player ${audio.paused ? 'paused' : 'playing'})`);
   if (resumeWhenVisible && state.current && audio.paused) {
     resumeWhenVisible = false;
@@ -1094,6 +1257,7 @@ async function boot() {
   renderPlayState();
 
   try { await loadLocal(); } catch { toast('Couldn’t open saved songs on this device.'); }
+  renderSection();
   renderViews();
   renderTracks();
   renderJobs();
